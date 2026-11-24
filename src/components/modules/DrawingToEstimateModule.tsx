@@ -221,6 +221,14 @@ async function applyPreprocessTransform(
   });
 }
 
+class HttpStatusError extends Error {
+  status: number;
+  constructor(status: number, message: string) {
+    super(message);
+    this.status = status;
+  }
+}
+
 async function safeFetchJson<T>(url: string, init?: RequestInit): Promise<T> {
   const res = await fetch(url, init);
   const rawText = await res.text();
@@ -229,12 +237,14 @@ async function safeFetchJson<T>(url: string, init?: RequestInit): Promise<T> {
     parsed = rawText ? JSON.parse(rawText) : {};
   } catch {
     if (res.status === 413) {
-      throw new Error(
+      throw new HttpStatusError(
+        413,
         'Drawing payload exceeded server upload limit (HTTP 413). Try fewer sheets per batch or lower-resolution scans.'
       );
     }
     const snippet = rawText.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 140);
-    throw new Error(
+    throw new HttpStatusError(
+      res.status,
       `Server returned a non-JSON response (HTTP ${res.status})${snippet ? `: ${snippet}` : '.'}`
     );
   }
@@ -243,7 +253,7 @@ async function safeFetchJson<T>(url: string, init?: RequestInit): Promise<T> {
       parsed && typeof parsed === 'object' && 'error' in parsed && typeof (parsed as { error: unknown }).error === 'string'
         ? (parsed as { error: string }).error
         : `Request failed (HTTP ${res.status}).`;
-    throw new Error(errMsg);
+    throw new HttpStatusError(res.status, errMsg);
   }
   return parsed as T;
 }
@@ -797,114 +807,215 @@ export const DrawingToEstimateModule: React.FC = () => {
       );
       const useChunkedUpload = preparedSheets.length > 1 || estimatedPayloadSize > 1_500_000;
 
-      let postJson: {
-        jobId: string;
-        immutableHashes?: Array<{ sheetId: string; hash: string }>;
-      };
+      let finalResult: {
+        detectedScaleText?: string;
+        detectedUnits?: 'm' | 'ft';
+        elements?: Array<Record<string, unknown>>;
+        scheduleTables?: PipelineScheduleRow[];
+      } | null = null;
 
-      if (useChunkedUpload) {
-        const initJson = await safeFetchJson<{ jobId: string }>('/api/pipeline/jobs', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            ...commonMeta,
-            deferred: true,
-            sheets: [],
-          }),
-        });
+      try {
+        let postJson: {
+          jobId: string;
+          immutableHashes?: Array<{ sheetId: string; hash: string }>;
+        };
 
-        setJobId(initJson.jobId);
-        const collectedHashes: Array<{ sheetId: string; hash: string }> = [];
-        for (let i = 0; i < preparedSheets.length; i++) {
-          const sh = preparedSheets[i];
-          setJobMessage(`Uploading sheet ${i + 1} of ${preparedSheets.length}: ${sh.name}...`);
-          const sheetRes = await safeFetchJson<{
-            immutableHash: { sheetId: string; hash: string };
-          }>(`/api/pipeline/jobs/${initJson.jobId}/sheets`, {
+        if (useChunkedUpload) {
+          const initJson = await safeFetchJson<{ jobId: string }>('/api/pipeline/jobs', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ sheet: sh }),
+            body: JSON.stringify({
+              ...commonMeta,
+              deferred: true,
+              sheets: [],
+            }),
           });
-          if (sheetRes.immutableHash) {
-            collectedHashes.push(sheetRes.immutableHash);
-            setSheets((prev) =>
-              prev.map((s) =>
-                s.id === sheetRes.immutableHash.sheetId
-                  ? { ...s, immutableHash: sheetRes.immutableHash.hash }
-                  : s
-              )
-            );
+
+          setJobId(initJson.jobId);
+          const collectedHashes: Array<{ sheetId: string; hash: string }> = [];
+          for (let i = 0; i < preparedSheets.length; i++) {
+            const sh = preparedSheets[i];
+            setJobMessage(`Uploading sheet ${i + 1} of ${preparedSheets.length}: ${sh.name}...`);
+            const sheetRes = await safeFetchJson<{
+              immutableHash: { sheetId: string; hash: string };
+            }>(`/api/pipeline/jobs/${initJson.jobId}/sheets`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ sheet: sh }),
+            });
+            if (sheetRes.immutableHash) {
+              collectedHashes.push(sheetRes.immutableHash);
+              setSheets((prev) =>
+                prev.map((s) =>
+                  s.id === sheetRes.immutableHash.sheetId
+                    ? { ...s, immutableHash: sheetRes.immutableHash.hash }
+                    : s
+                )
+              );
+            }
+          }
+
+          setJobMessage('Starting background extraction job...');
+          postJson = await safeFetchJson<{
+            jobId: string;
+            immutableHashes?: Array<{ sheetId: string; hash: string }>;
+          }>(`/api/pipeline/jobs/${initJson.jobId}/start`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+          });
+          if (!postJson.immutableHashes?.length) {
+            postJson.immutableHashes = collectedHashes;
+          }
+        } else {
+          postJson = await safeFetchJson<{
+            jobId: string;
+            immutableHashes?: Array<{ sheetId: string; hash: string }>;
+          }>('/api/pipeline/jobs', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              ...commonMeta,
+              sheets: preparedSheets,
+            }),
+          });
+        }
+
+        const newJobId = postJson.jobId;
+        setJobId(newJobId);
+
+        if (Array.isArray(postJson.immutableHashes)) {
+          const hashMap = new Map<string, string>(
+            postJson.immutableHashes.map((h) => [h.sheetId, h.hash])
+          );
+          setSheets((prev) =>
+            prev.map((s) => ({ ...s, immutableHash: hashMap.get(s.id) || s.immutableHash }))
+          );
+        }
+
+        let done = false;
+        while (!done) {
+          await new Promise((r) => setTimeout(r, 450));
+          const jobData = await safeFetchJson<{
+            status: string;
+            progressPct?: number;
+            stageMessage?: string;
+            stageLogs?: Array<{ timestamp: string; stage: string; detail: string }>;
+            error?: string;
+            result?: {
+              detectedScaleText?: string;
+              detectedUnits?: 'm' | 'ft';
+              elements?: Array<Record<string, unknown>>;
+              scheduleTables?: PipelineScheduleRow[];
+            };
+          }>(`/api/pipeline/jobs/${newJobId}`);
+
+          setJobStatus(jobData.status);
+          setJobProgress(jobData.progressPct || 0);
+          setJobMessage(jobData.stageMessage || '');
+          setJobLogs(jobData.stageLogs || []);
+
+          if (jobData.status === 'Failed') {
+            throw new Error(jobData.error || 'Background extraction job failed.');
+          }
+
+          if (jobData.status === 'Completed' && jobData.result) {
+            done = true;
+            finalResult = jobData.result;
           }
         }
-
-        setJobMessage('Starting background extraction job...');
-        postJson = await safeFetchJson<{
-          jobId: string;
-          immutableHashes?: Array<{ sheetId: string; hash: string }>;
-        }>(`/api/pipeline/jobs/${initJson.jobId}/start`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-        });
-        if (!postJson.immutableHashes?.length) {
-          postJson.immutableHashes = collectedHashes;
+      } catch (jobErr: unknown) {
+        // On serverless deployments (e.g., Vercel), stateful background job queues aren't mounted (HTTP 404).
+        // Fall back seamlessly to stateless per-sheet extraction via /api/pipeline/extract-sheet.
+        if (!(jobErr instanceof HttpStatusError && jobErr.status === 404)) {
+          throw jobErr;
         }
-      } else {
-        postJson = await safeFetchJson<{
-          jobId: string;
-          immutableHashes?: Array<{ sheetId: string; hash: string }>;
-        }>('/api/pipeline/jobs', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            ...commonMeta,
-            sheets: preparedSheets,
-          }),
-        });
-      }
 
-      const newJobId = postJson.jobId;
-      setJobId(newJobId);
+        const serverlessJobId = `sls-${Date.now()}`;
+        setJobId(serverlessJobId);
+        setJobStatus('Extracting');
+        setJobProgress(15);
+        setJobLogs([
+          {
+            timestamp: new Date().toISOString(),
+            stage: 'Serverless Mode',
+            detail: `Running stateless per-sheet extraction across ${preparedSheets.length} sheet(s)...`,
+          },
+        ]);
 
-      // Attach immutable hashes
-      if (Array.isArray(postJson.immutableHashes)) {
-        const hashMap = new Map<string, string>(
-          postJson.immutableHashes.map((h) => [h.sheetId, h.hash])
-        );
-        setSheets((prev) =>
-          prev.map((s) => ({ ...s, immutableHash: hashMap.get(s.id) || s.immutableHash }))
-        );
-      }
+        const combinedElements: Array<Record<string, unknown>> = [];
+        const combinedSchedules: PipelineScheduleRow[] = [];
+        let detectedScaleText = commonMeta.scaleRatioText;
+        let detectedUnits: 'm' | 'ft' = unitSystem === 'imperial' ? 'ft' : 'm';
 
-      // Poll until Completed or Failed
-      let done = false;
-      while (!done) {
-        await new Promise((r) => setTimeout(r, 450));
-        const jobData = await safeFetchJson<{
-          status: string;
-          progressPct?: number;
-          stageMessage?: string;
-          stageLogs?: Array<{ timestamp: string; stage: string; detail: string }>;
-          error?: string;
-          result?: {
+        for (let i = 0; i < preparedSheets.length; i++) {
+          const sh = preparedSheets[i];
+          setJobProgress(Math.min(90, 20 + Math.round(((i + 0.3) / preparedSheets.length) * 65)));
+          setJobMessage(`Extracting sheet ${i + 1} of ${preparedSheets.length}: ${sh.name}...`);
+
+          let sheetResult: {
+            immutableHash?: { sheetId: string; hash: string };
             detectedScaleText?: string;
             detectedUnits?: 'm' | 'ft';
             elements?: Array<Record<string, unknown>>;
             scheduleTables?: PipelineScheduleRow[];
+            logs?: Array<{ stage: string; detail: string }>;
           };
-        }>(`/api/pipeline/jobs/${newJobId}`);
 
-        setJobStatus(jobData.status);
-        setJobProgress(jobData.progressPct || 0);
-        setJobMessage(jobData.stageMessage || '');
-        setJobLogs(jobData.stageLogs || []);
+          try {
+            sheetResult = await safeFetchJson('/api/pipeline/extract-sheet', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                ...commonMeta,
+                sheet: sh,
+              }),
+            });
+          } catch (slsErr: unknown) {
+            if (slsErr instanceof HttpStatusError && slsErr.status === 404) {
+              throw new Error(
+                'Backend API routes (/api/pipeline/extract-sheet) were not found on this deployment (HTTP 404). Ensure the /api folder is deployed to Vercel with GEMINI_API_KEY configured in Project Settings > Environment Variables, or run the full-stack server via "npm run dev" / "npm start".'
+              );
+            }
+            throw slsErr;
+          }
 
-        if (jobData.status === 'Failed') {
-          throw new Error(jobData.error || 'Background extraction job failed.');
+          if (sheetResult.immutableHash?.hash) {
+            const h = sheetResult.immutableHash.hash;
+            setSheets((prev) =>
+              prev.map((s) => (s.id === sh.id ? { ...s, immutableHash: h } : s))
+            );
+          }
+          if (sheetResult.logs?.length) {
+            setJobLogs((prev) => [
+              ...prev,
+              ...sheetResult.logs!.map((l) => ({
+                timestamp: new Date().toISOString(),
+                stage: l.stage,
+                detail: l.detail,
+              })),
+            ]);
+          }
+          if (sheetResult.detectedScaleText) detectedScaleText = sheetResult.detectedScaleText;
+          if (sheetResult.detectedUnits) detectedUnits = sheetResult.detectedUnits;
+          if (Array.isArray(sheetResult.elements)) combinedElements.push(...sheetResult.elements);
+          if (Array.isArray(sheetResult.scheduleTables)) {
+            combinedSchedules.push(...sheetResult.scheduleTables);
+          }
         }
 
-        if (jobData.status === 'Completed' && jobData.result) {
-          done = true;
-          const rawEls = (jobData.result.elements || []) as Array<Record<string, unknown>>;
+        setJobStatus('Completed');
+        setJobProgress(100);
+        setJobMessage(`Completed extraction: ${combinedElements.length} elements ready for review.`);
+        finalResult = {
+          detectedScaleText,
+          detectedUnits,
+          elements: combinedElements,
+          scheduleTables: combinedSchedules,
+        };
+      }
+
+      if (finalResult) {
+        const rawEls = (finalResult.elements || []) as Array<Record<string, unknown>>;
           const mappedEls: PipelineExtractedElement[] = rawEls.map((r, idx) => {
             const cat = (WORK_CATEGORIES.includes(r.category as WorkCategory)
               ? r.category
@@ -964,12 +1075,11 @@ export const DrawingToEstimateModule: React.FC = () => {
           });
 
           setElements(mappedEls);
-          setScheduleTables((jobData.result.scheduleTables || []) as PipelineScheduleRow[]);
+          setScheduleTables((finalResult.scheduleTables || []) as PipelineScheduleRow[]);
           setSelectedElementId(mappedEls[0]?.id || null);
           setAuditDecisions([]);
           setCommitResult(null);
           setStep(4);
-        }
       }
     } catch (err: unknown) {
       setJobStatus('Failed');
