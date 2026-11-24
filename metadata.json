@@ -1,0 +1,6 @@
+{
+  "name": "CivilEstimate Pro",
+  "description": "Construction estimating, quantity takeoff, rate analysis, BOQ, material & labor scheduling, and CPM Gantt project planning platform for civil engineers.",
+  "requestFramePermissions": ["microphone"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
