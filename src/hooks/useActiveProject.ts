@@ -1,5 +1,5 @@
 import { useMemo } from 'react';
-import { useEstimateStore } from '../store/useEstimateStore';
+import { canUserAccessProject, useEstimateStore } from '../store/useEstimateStore';
 import { computeProjectSummary } from '../engine/calculations';
 import { hydrateProjectOperationalData } from '../data/sampleOperationalData';
 import { getRoleDefinition, normalizeRoleName } from '../data/roles';
@@ -13,6 +13,7 @@ export function useActiveProject() {
   const roleDefinitions = useEstimateStore((s) => s.roleDefinitions);
   const teamUsers = useEstimateStore((s) => s.teamUsers);
   const activeUserId = useEstimateStore((s) => s.activeUserId);
+  const userMemories = useEstimateStore((s) => s.userMemories);
 
   const userRole = normalizeRoleName(userRoleRaw);
   const activeRoleDef = useMemo(
@@ -25,18 +26,32 @@ export function useActiveProject() {
     [teamUsers, activeUserId]
   );
 
+  const resolvedUserId = activeUser?.id || activeUserId;
+
+  const visibleProjects = useMemo(() => {
+    const list = projects.filter((p) => canUserAccessProject(p, resolvedUserId));
+    return list.length > 0 ? list : projects.slice(0, 1);
+  }, [projects, resolvedUserId]);
+
   const project = useMemo(() => {
-    const raw = projects.find((p) => p.id === activeProjectId) || projects[0];
+    const raw =
+      visibleProjects.find((p) => p.id === activeProjectId) ||
+      visibleProjects[0] ||
+      projects[0];
     return hydrateProjectOperationalData(raw);
-  }, [projects, activeProjectId]);
+  }, [visibleProjects, projects, activeProjectId]);
 
   const summary = useMemo(
     () => computeProjectSummary(project, resources),
     [project, resources]
   );
 
+  const userMemory = userMemories[resolvedUserId];
+  const isPrivateProject = project.visibility === 'private';
+
   return {
     project,
+    visibleProjects,
     summary,
     resources,
     unitSystem,
@@ -44,5 +59,7 @@ export function useActiveProject() {
     activeRoleDef,
     activeUser,
     roleDefinitions,
+    userMemory,
+    isPrivateProject,
   };
 }

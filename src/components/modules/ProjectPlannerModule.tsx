@@ -43,13 +43,40 @@ import {
   ScheduleConstraintType,
 } from '../../types/estimate';
 import { RoleBadge } from '../common/RoleBadge';
+import { hasModulePermission, normalizeRoleName } from '../../data/roles';
 
 type PlannerTab = 'wbs-gantt' | 'resources' | 'evm' | 'lookahead' | 'scenarios-risks';
+
+const ALL_PLANNER_TABS: Array<{ id: PlannerTab; label: string }> = [
+  { id: 'wbs-gantt', label: 'WBS & CPM Gantt' },
+  { id: 'resources', label: 'Resources & Leveling' },
+  { id: 'evm', label: 'EVM & Cost S-Curve' },
+  { id: 'lookahead', label: 'Look-Ahead & Site Sync' },
+  { id: 'scenarios-risks', label: 'Scenarios & Risks' },
+];
 
 const TEAM_LEADERS = ['Bilal Tariq', 'Ustad Rasheed', 'M. Akram', 'Haji Irfan', 'Eleanor Vance, PE'];
 
 export const ProjectPlannerModule: React.FC = () => {
-  const { project, summary, resources } = useActiveProject();
+  const { project, summary, resources, userRole, roleDefinitions } = useActiveProject();
+  const normalizedRole = normalizeRoleName(userRole);
+  const canEditPlanner = hasModulePermission(userRole, 'planner', 'edit', roleDefinitions);
+  const canCreatePlanner = hasModulePermission(userRole, 'planner', 'create', roleDefinitions);
+  const canDeletePlanner = hasModulePermission(userRole, 'planner', 'delete', roleDefinitions);
+
+  const allowedTabs = useMemo(() => {
+    if (normalizedRole === 'Project Manager') {
+      return ALL_PLANNER_TABS.filter((t) => t.id !== 'resources');
+    }
+    if (normalizedRole === 'Finance/Accounts') {
+      return ALL_PLANNER_TABS.filter((t) => t.id === 'evm');
+    }
+    if (normalizedRole === 'Team Leader' || normalizedRole === 'Site Engineer') {
+      return ALL_PLANNER_TABS.filter((t) => t.id === 'lookahead' || t.id === 'wbs-gantt');
+    }
+    return ALL_PLANNER_TABS;
+  }, [normalizedRole]);
+
   const updateBOQItem = useEstimateStore((s) => s.updateBOQItem);
   const updateActiveProject = useEstimateStore((s) => s.updateActiveProject);
   const addWBSNode = useEstimateStore((s) => s.addWBSNode);
@@ -62,6 +89,7 @@ export const ProjectPlannerModule: React.FC = () => {
   const verifyAndSyncDailyReport = useEstimateStore((s) => s.verifyAndSyncDailyReport);
 
   const [tab, setTab] = useState<PlannerTab>('wbs-gantt');
+  const activeTab: PlannerTab = allowedTabs.some((t) => t.id === tab) ? tab : allowedTabs[0].id;
   const [selectedTaskId, setSelectedTaskId] = useState<string>(summary.tasks[0]?.boqItemId || '');
   const [showBaseline, setShowBaseline] = useState(true);
   const [collapsedWbs, setCollapsedWbs] = useState<Record<string, boolean>>({});
@@ -233,31 +261,25 @@ export const ProjectPlannerModule: React.FC = () => {
           </h1>
         </div>
 
-        {/* Sub-navigation Tabs */}
-        <div className="flex flex-wrap items-center gap-1 p-1 bg-slate-100 dark:bg-slate-800 rounded-lg border border-slate-200 dark:border-slate-700">
-          {(
-            [
-              { id: 'wbs-gantt', label: 'WBS & CPM Gantt' },
-              { id: 'resources', label: 'Resources & Leveling' },
-              { id: 'evm', label: 'EVM & Cost S-Curve' },
-              { id: 'lookahead', label: 'Look-Ahead & Site Sync' },
-              { id: 'scenarios-risks', label: 'Scenarios & Risks' },
-            ] as const
-          ).map((t) => (
-            <button
-              key={t.id}
-              type="button"
-              onClick={() => setTab(t.id)}
-              className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors whitespace-nowrap ${
-                tab === t.id
-                  ? 'bg-white dark:bg-slate-900 text-slate-900 dark:text-white shadow-xs'
-                  : 'text-slate-600 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white'
-              }`}
-            >
-              {t.label}
-            </button>
-          ))}
-        </div>
+        {/* Role-Filtered Sub-navigation Tabs */}
+        {allowedTabs.length > 1 && (
+          <div className="flex flex-wrap items-center gap-1 p-1 bg-slate-100 dark:bg-slate-800 rounded-lg border border-slate-200 dark:border-slate-700">
+            {allowedTabs.map((t) => (
+              <button
+                key={t.id}
+                type="button"
+                onClick={() => setTab(t.id)}
+                className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors whitespace-nowrap ${
+                  activeTab === t.id
+                    ? 'bg-white dark:bg-slate-900 text-slate-900 dark:text-white shadow-xs'
+                    : 'text-slate-600 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white'
+                }`}
+              >
+                {t.label}
+              </button>
+            ))}
+          </div>
+        )}
       </div>
 
       {/* KPI Strip */}
@@ -318,7 +340,7 @@ export const ProjectPlannerModule: React.FC = () => {
       </div>
 
       {/* TAB 1: WBS TREE + INTERACTIVE CPM GANTT (FS, SS, FF, SF + CONSTRAINTS) */}
-      {tab === 'wbs-gantt' && (
+      {activeTab === 'wbs-gantt' && (
         <div className="space-y-5">
           {/* WBS Hierarchical Tree */}
           <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-lg p-4">
@@ -332,41 +354,43 @@ export const ProjectPlannerModule: React.FC = () => {
                   Project &gt; Phase &gt; Work Package &gt; Scheduled BOQ Activities
                 </p>
               </div>
-              <div className="flex items-center gap-2">
-                <input
-                  type="text"
-                  value={newWbsCode}
-                  onChange={(e) => setNewWbsCode(e.target.value)}
-                  placeholder="Code"
-                  className="w-16 px-2 py-1.5 text-xs font-mono bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded"
-                />
-                <input
-                  type="text"
-                  value={newWbsName}
-                  onChange={(e) => setNewWbsName(e.target.value)}
-                  placeholder="New WBS phase or work package..."
-                  className="w-52 px-2.5 py-1.5 text-xs bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded"
-                />
-                <button
-                  type="button"
-                  onClick={() => {
-                    if (!newWbsName.trim()) return;
-                    addWBSNode({
-                      code: newWbsCode || '1.x',
-                      name: newWbsName.trim(),
-                      level: 'Phase',
-                      parentId: wbsNodes[0]?.id,
-                      boqItemIds: [],
-                      ownerRole: 'Site Engineer',
-                    });
-                    setNewWbsName('');
-                  }}
-                  className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded bg-[#0F2137] text-white text-xs font-medium whitespace-nowrap"
-                >
-                  <Plus className="w-3.5 h-3.5" />
-                  <span>Add Node</span>
-                </button>
-              </div>
+              {canCreatePlanner && (
+                <div className="flex items-center gap-2">
+                  <input
+                    type="text"
+                    value={newWbsCode}
+                    onChange={(e) => setNewWbsCode(e.target.value)}
+                    placeholder="Code"
+                    className="w-16 px-2 py-1.5 text-xs font-mono bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded"
+                  />
+                  <input
+                    type="text"
+                    value={newWbsName}
+                    onChange={(e) => setNewWbsName(e.target.value)}
+                    placeholder="New WBS phase or work package..."
+                    className="w-52 px-2.5 py-1.5 text-xs bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (!newWbsName.trim()) return;
+                      addWBSNode({
+                        code: newWbsCode || '1.x',
+                        name: newWbsName.trim(),
+                        level: 'Phase',
+                        parentId: wbsNodes[0]?.id,
+                        boqItemIds: [],
+                        ownerRole: 'Site Engineer',
+                      });
+                      setNewWbsName('');
+                    }}
+                    className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded bg-[#0F2137] text-white text-xs font-medium whitespace-nowrap"
+                  >
+                    <Plus className="w-3.5 h-3.5" />
+                    <span>Add Node</span>
+                  </button>
+                </div>
+              )}
             </div>
 
             <div className="overflow-x-auto border border-slate-200 dark:border-slate-800 rounded-md">
@@ -846,7 +870,7 @@ export const ProjectPlannerModule: React.FC = () => {
       )}
 
       {/* TAB 2: RESOURCE PLANNING, OVER-ALLOCATION & LEVELING */}
-      {tab === 'resources' && (
+      {activeTab === 'resources' && (
         <div className="space-y-5">
           <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-lg p-5">
             <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-3 mb-4">
@@ -873,14 +897,16 @@ export const ProjectPlannerModule: React.FC = () => {
                     className="w-16 px-2 py-1 font-mono bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded"
                   />
                 </div>
-                <button
-                  type="button"
-                  onClick={() => levelScheduleResources(crewCapacity)}
-                  className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-md bg-orange-600 hover:bg-orange-700 text-white text-xs font-semibold whitespace-nowrap"
-                >
-                  <RefreshCw className="w-3.5 h-3.5" />
-                  <span>Auto-Level Non-Critical Tasks</span>
-                </button>
+                {canEditPlanner && (
+                  <button
+                    type="button"
+                    onClick={() => levelScheduleResources(crewCapacity)}
+                    className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-md bg-orange-600 hover:bg-orange-700 text-white text-xs font-semibold whitespace-nowrap"
+                  >
+                    <RefreshCw className="w-3.5 h-3.5" />
+                    <span>Auto-Level Non-Critical Tasks</span>
+                  </button>
+                )}
               </div>
             </div>
 
@@ -1002,7 +1028,7 @@ export const ProjectPlannerModule: React.FC = () => {
       )}
 
       {/* TAB 3: EARNED VALUE MANAGEMENT (EVM) & COST-LOADED S-CURVE */}
-      {tab === 'evm' && (
+      {activeTab === 'evm' && (
         <div className="space-y-5">
           <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-lg p-5">
             <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 mb-4">
@@ -1108,7 +1134,7 @@ export const ProjectPlannerModule: React.FC = () => {
       )}
 
       {/* TAB 4: LOOK-AHEAD PLANNER (2/4/6 WEEKS) + SITE REPORT AUTO-SYNC */}
-      {tab === 'lookahead' && (
+      {activeTab === 'lookahead' && (
         <div className="grid grid-cols-1 xl:grid-cols-12 gap-5">
           <div className="xl:col-span-7 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-lg p-5 space-y-4">
             <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
@@ -1242,7 +1268,7 @@ export const ProjectPlannerModule: React.FC = () => {
       )}
 
       {/* TAB 5: WHAT-IF SCENARIOS & DELAY/RISK REGISTER */}
-      {tab === 'scenarios-risks' && (
+      {activeTab === 'scenarios-risks' && (
         <div className="space-y-5">
           {/* What-If Scenarios */}
           <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-lg p-5 space-y-4">
@@ -1256,57 +1282,59 @@ export const ProjectPlannerModule: React.FC = () => {
                   Duplicate the baseline schedule and simulate crew additions, productivity shifts, or weather delays.
                 </p>
               </div>
-              <div className="flex flex-wrap items-center gap-2 text-xs">
-                <input
-                  type="text"
-                  value={scnName}
-                  onChange={(e) => setScnName(e.target.value)}
-                  placeholder="Scenario name (e.g. Night Shift Masonry)"
-                  className="w-52 px-2.5 py-1.5 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded"
-                />
-                <label className="flex items-center gap-1 text-[11px] text-slate-500">
-                  Crew×
+              {canCreatePlanner && (
+                <div className="flex flex-wrap items-center gap-2 text-xs">
                   <input
-                    type="number"
-                    step="0.1"
-                    min={0.5}
-                    max={3}
-                    value={scnCrewMult}
-                    onChange={(e) => setScnCrewMult(Number(e.target.value) || 1)}
-                    className="w-14 px-1.5 py-1 font-mono bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded"
+                    type="text"
+                    value={scnName}
+                    onChange={(e) => setScnName(e.target.value)}
+                    placeholder="Scenario name (e.g. Night Shift Masonry)"
+                    className="w-52 px-2.5 py-1.5 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded"
                   />
-                </label>
-                <label className="flex items-center gap-1 text-[11px] text-slate-500">
-                  Buffer+d
-                  <input
-                    type="number"
-                    min={0}
-                    max={30}
-                    value={scnBuffer}
-                    onChange={(e) => setScnBuffer(Number(e.target.value) || 0)}
-                    className="w-12 px-1.5 py-1 font-mono bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded"
-                  />
-                </label>
-                <button
-                  type="button"
-                  onClick={() => {
-                    if (!scnName.trim()) return;
-                    addScheduleScenario({
-                      name: scnName.trim(),
-                      notes: `Crew ×${scnCrewMult}, Productivity ×${scnProdMult}, Shift +${scnShift}d, Extra Buffer +${scnBuffer}d`,
-                      crewMultiplier: scnCrewMult,
-                      productivityMultiplier: scnProdMult,
-                      startShiftDays: scnShift,
-                      extraBufferDays: scnBuffer,
-                    });
-                    setScnName('');
-                  }}
-                  className="inline-flex items-center gap-1 px-3 py-1.5 rounded bg-orange-600 text-white font-semibold"
-                >
-                  <Plus className="w-3.5 h-3.5" />
-                  <span>Simulate</span>
-                </button>
-              </div>
+                  <label className="flex items-center gap-1 text-[11px] text-slate-500">
+                    Crew×
+                    <input
+                      type="number"
+                      step="0.1"
+                      min={0.5}
+                      max={3}
+                      value={scnCrewMult}
+                      onChange={(e) => setScnCrewMult(Number(e.target.value) || 1)}
+                      className="w-14 px-1.5 py-1 font-mono bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded"
+                    />
+                  </label>
+                  <label className="flex items-center gap-1 text-[11px] text-slate-500">
+                    Buffer+d
+                    <input
+                      type="number"
+                      min={0}
+                      max={30}
+                      value={scnBuffer}
+                      onChange={(e) => setScnBuffer(Number(e.target.value) || 0)}
+                      className="w-12 px-1.5 py-1 font-mono bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded"
+                    />
+                  </label>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (!scnName.trim()) return;
+                      addScheduleScenario({
+                        name: scnName.trim(),
+                        notes: `Crew ×${scnCrewMult}, Productivity ×${scnProdMult}, Shift +${scnShift}d, Extra Buffer +${scnBuffer}d`,
+                        crewMultiplier: scnCrewMult,
+                        productivityMultiplier: scnProdMult,
+                        startShiftDays: scnShift,
+                        extraBufferDays: scnBuffer,
+                      });
+                      setScnName('');
+                    }}
+                    className="inline-flex items-center gap-1 px-3 py-1.5 rounded bg-orange-600 text-white font-semibold"
+                  >
+                    <Plus className="w-3.5 h-3.5" />
+                    <span>Simulate</span>
+                  </button>
+                </div>
+              )}
             </div>
 
             <div className="overflow-x-auto border border-slate-200 dark:border-slate-800 rounded-md">
@@ -1351,7 +1379,7 @@ export const ProjectPlannerModule: React.FC = () => {
                       <td className="px-3 py-2.5 text-right">
                         {sc.isBaseline ? (
                           <span className="text-[11px] text-slate-400">Baseline</span>
-                        ) : (
+                        ) : canDeletePlanner ? (
                           <button
                             type="button"
                             onClick={() => deleteScheduleScenario(sc.id)}
@@ -1359,6 +1387,8 @@ export const ProjectPlannerModule: React.FC = () => {
                           >
                             Delete
                           </button>
+                        ) : (
+                          <span className="text-[11px] text-slate-400">Simulated</span>
                         )}
                       </td>
                     </tr>
@@ -1380,64 +1410,66 @@ export const ProjectPlannerModule: React.FC = () => {
                   Track delay causes, impact days, cost exposure, owners, and mitigation plans.
                 </p>
               </div>
-              <div className="flex flex-wrap items-center gap-2 text-xs">
-                <input
-                  type="text"
-                  value={riskTitle}
-                  onChange={(e) => setRiskTitle(e.target.value)}
-                  placeholder="New delay / risk title..."
-                  className="w-48 px-2.5 py-1.5 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded"
-                />
-                <select
-                  value={riskCat}
-                  onChange={(e) => setRiskCat(e.target.value as DelayRiskItem['category'])}
-                  className="px-2 py-1.5 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded"
-                >
-                  <option value="Schedule">Schedule</option>
-                  <option value="Supply Chain">Supply Chain</option>
-                  <option value="Weather">Weather</option>
-                  <option value="Technical">Technical</option>
-                  <option value="Cost">Cost</option>
-                </select>
-                <input
-                  type="number"
-                  min={1}
-                  value={riskDays}
-                  onChange={(e) => setRiskDays(Number(e.target.value) || 1)}
-                  className="w-14 px-2 py-1.5 font-mono bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded"
-                  title="Impact Days"
-                />
-                <input
-                  type="text"
-                  value={riskMitigation}
-                  onChange={(e) => setRiskMitigation(e.target.value)}
-                  placeholder="Mitigation action..."
-                  className="w-44 px-2.5 py-1.5 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded"
-                />
-                <button
-                  type="button"
-                  onClick={() => {
-                    if (!riskTitle.trim()) return;
-                    addDelayRisk({
-                      title: riskTitle.trim(),
-                      category: riskCat,
-                      impactDays: riskDays,
-                      costImpact: riskCost,
-                      probability: 'Medium',
-                      owner: riskOwner,
-                      ownerRole: 'Project Manager',
-                      mitigation: riskMitigation.trim() || 'Monitor weekly in progress review.',
-                      status: 'Open',
-                    });
-                    setRiskTitle('');
-                    setRiskMitigation('');
-                  }}
-                  className="inline-flex items-center gap-1 px-3 py-1.5 rounded bg-[#0F2137] text-white font-semibold"
-                >
-                  <Plus className="w-3.5 h-3.5" />
-                  <span>Log Risk</span>
-                </button>
-              </div>
+              {canCreatePlanner && (
+                <div className="flex flex-wrap items-center gap-2 text-xs">
+                  <input
+                    type="text"
+                    value={riskTitle}
+                    onChange={(e) => setRiskTitle(e.target.value)}
+                    placeholder="New delay / risk title..."
+                    className="w-48 px-2.5 py-1.5 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded"
+                  />
+                  <select
+                    value={riskCat}
+                    onChange={(e) => setRiskCat(e.target.value as DelayRiskItem['category'])}
+                    className="px-2 py-1.5 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded"
+                  >
+                    <option value="Schedule">Schedule</option>
+                    <option value="Supply Chain">Supply Chain</option>
+                    <option value="Weather">Weather</option>
+                    <option value="Technical">Technical</option>
+                    <option value="Cost">Cost</option>
+                  </select>
+                  <input
+                    type="number"
+                    min={1}
+                    value={riskDays}
+                    onChange={(e) => setRiskDays(Number(e.target.value) || 1)}
+                    className="w-14 px-2 py-1.5 font-mono bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded"
+                    title="Impact Days"
+                  />
+                  <input
+                    type="text"
+                    value={riskMitigation}
+                    onChange={(e) => setRiskMitigation(e.target.value)}
+                    placeholder="Mitigation action..."
+                    className="w-44 px-2.5 py-1.5 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (!riskTitle.trim()) return;
+                      addDelayRisk({
+                        title: riskTitle.trim(),
+                        category: riskCat,
+                        impactDays: riskDays,
+                        costImpact: riskCost,
+                        probability: 'Medium',
+                        owner: riskOwner,
+                        ownerRole: 'Project Manager',
+                        mitigation: riskMitigation.trim() || 'Monitor weekly in progress review.',
+                        status: 'Open',
+                      });
+                      setRiskTitle('');
+                      setRiskMitigation('');
+                    }}
+                    className="inline-flex items-center gap-1 px-3 py-1.5 rounded bg-[#0F2137] text-white font-semibold"
+                  >
+                    <Plus className="w-3.5 h-3.5" />
+                    <span>Log Risk</span>
+                  </button>
+                </div>
+              )}
             </div>
 
             <div className="overflow-x-auto border border-slate-200 dark:border-slate-800 rounded-md">
@@ -1449,7 +1481,9 @@ export const ProjectPlannerModule: React.FC = () => {
                     <th className="text-right px-3 py-2 font-semibold">Impact</th>
                     <th className="text-left px-3 py-2 font-semibold">Mitigation</th>
                     <th className="text-left px-3 py-2 font-semibold">Status</th>
-                    <th className="text-right px-3 py-2 font-semibold">Action</th>
+                    {canDeletePlanner && (
+                      <th className="text-right px-3 py-2 font-semibold">Action</th>
+                    )}
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
@@ -1479,25 +1513,28 @@ export const ProjectPlannerModule: React.FC = () => {
                       <td className="px-3 py-2.5">
                         <select
                           value={rk.status}
+                          disabled={!canEditPlanner}
                           onChange={(e) =>
                             updateDelayRisk(rk.id, { status: e.target.value as DelayRiskItem['status'] })
                           }
-                          className="px-2 py-1 text-xs bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded"
+                          className="px-2 py-1 text-xs bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded disabled:opacity-60"
                         >
                           <option value="Open">Open</option>
                           <option value="Mitigated">Mitigated</option>
                           <option value="Closed">Closed</option>
                         </select>
                       </td>
-                      <td className="px-3 py-2.5 text-right">
-                        <button
-                          type="button"
-                          onClick={() => deleteDelayRisk(rk.id)}
-                          className="text-[11px] text-red-500 hover:underline"
-                        >
-                          Remove
-                        </button>
-                      </td>
+                      {canDeletePlanner && (
+                        <td className="px-3 py-2.5 text-right">
+                          <button
+                            type="button"
+                            onClick={() => deleteDelayRisk(rk.id)}
+                            className="text-[11px] text-red-500 hover:underline"
+                          >
+                            Remove
+                          </button>
+                        </td>
+                      )}
                     </tr>
                   ))}
                 </tbody>

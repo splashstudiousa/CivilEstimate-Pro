@@ -79,6 +79,18 @@ interface PipelineJobRecord {
 
 const immutableDrawingStore = new Map<string, ImmutableDrawingRecord>();
 const pipelineJobStore = new Map<string, PipelineJobRecord>();
+const pendingPipelinePayloads = new Map<
+  string,
+  {
+    drawingType: string;
+    unitSystem: 'metric' | 'imperial';
+    wallHeightM: number;
+    slabThicknessM: number;
+    steelRatioKgPerM3: number;
+    scaleRatioText: string;
+    sheets: IncomingPipelineSheet[];
+  }
+>();
 
 function hasBinaryOnPath(bin: string): boolean {
   try {
@@ -344,6 +356,8 @@ async function runPipelineBackgroundJob(
         `Analyzing ${sheet.name} (${payload.drawingType}) with Gemini Vision + OCR/Vector tokens...`
       );
 
+      const mimeMatch = sheet.imageBase64.match(/^data:([^;]+);base64,/i);
+      const detectedMimeType = mimeMatch ? mimeMatch[1] : sheet.mimeType || 'image/jpeg';
       const cleanBase64 = sheet.imageBase64.includes(',')
         ? sheet.imageBase64.split(',')[1]
         : sheet.imageBase64;
@@ -383,7 +397,7 @@ For EVERY element provide normalized bounding box coordinates (xPct, yPct, wPct,
           parts: [
             {
               inlineData: {
-                mimeType: sheet.mimeType || 'image/jpeg',
+                mimeType: detectedMimeType,
                 data: cleanBase64,
               },
             },
@@ -441,12 +455,23 @@ For EVERY element provide normalized bounding box coordinates (xPct, yPct, wPct,
         },
       });
 
-      const parsed = JSON.parse((response.text ?? '{}').trim()) as {
+      const rawJsonText = (response.text ?? '{}')
+        .trim()
+        .replace(/^```(?:json)?\s*/i, '')
+        .replace(/\s*```$/, '');
+      let parsed: {
         detectedScaleText?: string;
         detectedUnits?: string;
         elements?: Array<Record<string, unknown>>;
         scheduleTables?: Array<Record<string, unknown>>;
       };
+      try {
+        parsed = JSON.parse(rawJsonText);
+      } catch {
+        throw new Error(
+          `AI returned an unexpected non-JSON response while analyzing "${sheet.name}". Please retry extraction.`
+        );
+      }
 
       if (parsed.detectedScaleText) detectedScaleText = parsed.detectedScaleText;
       if (parsed.detectedUnits?.toLowerCase().includes('ft')) detectedUnits = 'ft';
@@ -513,6 +538,23 @@ app.get('/api/health', (_req, res) => {
   res.json({ status: 'ok', aiConfigured: Boolean(process.env.GEMINI_API_KEY) });
 });
 
+function registerImmutableSheetHash(s: IncomingPipelineSheet) {
+  const rawContent = s.dxfText || s.imageBase64 || s.name;
+  const hash = crypto.createHash('sha256').update(rawContent).digest('hex').slice(0, 16);
+  const byteSize = Buffer.byteLength(rawContent, 'utf8');
+  if (!immutableDrawingStore.has(hash)) {
+    immutableDrawingStore.set(hash, {
+      hash,
+      fileName: s.name,
+      fileType: s.fileType,
+      byteSize,
+      uploadedAt: new Date().toISOString(),
+      immutable: true,
+    });
+  }
+  return { sheetId: s.id, fileName: s.name, hash, byteSize };
+}
+
 app.post('/api/pipeline/jobs', (req, res) => {
   const {
     drawingType = 'Architectural Plan',
@@ -522,6 +564,7 @@ app.post('/api/pipeline/jobs', (req, res) => {
     steelRatioKgPerM3 = 110,
     scaleRatioText = '1:100',
     sheets = [],
+    deferred = false,
   } = req.body as {
     drawingType?: string;
     unitSystem?: 'metric' | 'imperial';
@@ -530,63 +573,111 @@ app.post('/api/pipeline/jobs', (req, res) => {
     steelRatioKgPerM3?: number;
     scaleRatioText?: string;
     sheets?: IncomingPipelineSheet[];
+    deferred?: boolean;
   };
 
-  if (!Array.isArray(sheets) || sheets.length === 0) {
+  if (!deferred && (!Array.isArray(sheets) || sheets.length === 0)) {
     res.status(400).json({ error: 'Provide at least one drawing sheet for pipeline extraction.' });
     return;
   }
 
-  const immutableHashes = sheets.map((s) => {
-    const rawContent = s.dxfText || s.imageBase64 || s.name;
-    const hash = crypto.createHash('sha256').update(rawContent).digest('hex').slice(0, 16);
-    const byteSize = Buffer.byteLength(rawContent, 'utf8');
-    if (!immutableDrawingStore.has(hash)) {
-      immutableDrawingStore.set(hash, {
-        hash,
-        fileName: s.name,
-        fileType: s.fileType,
-        byteSize,
-        uploadedAt: new Date().toISOString(),
-        immutable: true,
-      });
-    }
-    return { sheetId: s.id, fileName: s.name, hash, byteSize };
-  });
+  const safeSheets = Array.isArray(sheets) ? sheets : [];
+  const immutableHashes = safeSheets.map(registerImmutableSheetHash);
 
   const jobId = `job-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
   const job: PipelineJobRecord = {
     jobId,
     status: 'Queued',
     progressPct: 5,
-    stageMessage: 'Job queued — storing original sheets immutably...',
+    stageMessage: deferred
+      ? 'Job initialized — receiving immutable drawing sheets...'
+      : 'Job queued — storing original sheets immutably...',
     stageLogs: [
       {
         timestamp: new Date().toISOString(),
         stage: 'Queued',
-        detail: `Created immutable job ${jobId} for ${sheets.length} sheet(s).`,
+        detail: deferred
+          ? `Initialized batch job ${jobId}; uploading drawing sheets individually.`
+          : `Created immutable job ${jobId} for ${safeSheets.length} sheet(s).`,
       },
     ],
     immutableHashes,
   };
   pipelineJobStore.set(jobId, job);
 
-  // Fire background extraction asynchronously
-  setTimeout(() => {
-    void runPipelineBackgroundJob(jobId, {
+  if (deferred) {
+    pendingPipelinePayloads.set(jobId, {
       drawingType,
       unitSystem,
       wallHeightM,
       slabThicknessM,
       steelRatioKgPerM3,
       scaleRatioText,
-      sheets,
+      sheets: [...safeSheets],
     });
-  }, 40);
+  } else {
+    // Fire background extraction asynchronously
+    setTimeout(() => {
+      void runPipelineBackgroundJob(jobId, {
+        drawingType,
+        unitSystem,
+        wallHeightM,
+        slabThicknessM,
+        steelRatioKgPerM3,
+        scaleRatioText,
+        sheets: safeSheets,
+      });
+    }, 40);
+  }
 
   res.status(202).json({
     jobId,
     immutableHashes,
+    status: job.status,
+  });
+});
+
+app.post('/api/pipeline/jobs/:jobId/sheets', (req, res) => {
+  const job = pipelineJobStore.get(req.params.jobId);
+  const pending = pendingPipelinePayloads.get(req.params.jobId);
+  if (!job || !pending) {
+    res.status(404).json({ error: 'Pending pipeline job not found or already started.' });
+    return;
+  }
+  const { sheet } = req.body as { sheet?: IncomingPipelineSheet };
+  if (!sheet || !sheet.id || !sheet.name) {
+    res.status(400).json({ error: 'Invalid drawing sheet payload.' });
+    return;
+  }
+  const hashRec = registerImmutableSheetHash(sheet);
+  pending.sheets.push(sheet);
+  job.immutableHashes.push(hashRec);
+  appendJobLog(job, 'Queued', `Locked immutable sheet "${sheet.name}" (SHA-256: ${hashRec.hash}).`);
+  res.json({
+    immutableHash: hashRec,
+    totalSheets: pending.sheets.length,
+  });
+});
+
+app.post('/api/pipeline/jobs/:jobId/start', (req, res) => {
+  const job = pipelineJobStore.get(req.params.jobId);
+  const pending = pendingPipelinePayloads.get(req.params.jobId);
+  if (!job || !pending) {
+    res.status(404).json({ error: 'Pending pipeline job not found or already started.' });
+    return;
+  }
+  if (pending.sheets.length === 0) {
+    res.status(400).json({ error: 'Provide at least one drawing sheet before starting extraction.' });
+    return;
+  }
+  pendingPipelinePayloads.delete(req.params.jobId);
+  job.stageMessage = `Queued ${pending.sheets.length} immutable sheet(s) for extraction...`;
+  setTimeout(() => {
+    void runPipelineBackgroundJob(req.params.jobId, pending);
+  }, 40);
+  res.status(202).json({
+    jobId: job.jobId,
+    immutableHashes: job.immutableHashes,
     status: job.status,
   });
 });
@@ -781,6 +872,30 @@ app.post('/api/transcribe-audio', async (req, res) => {
     res.status(500).json({ error: message });
   }
 });
+
+app.use('/api', (_req, res) => {
+  res.status(404).json({ error: 'Requested API route was not found.' });
+});
+
+app.use(
+  '/api',
+  (
+    err: unknown,
+    _req: express.Request,
+    res: express.Response,
+    _next: express.NextFunction
+  ) => {
+    const status =
+      typeof err === 'object' && err !== null && 'status' in err && typeof (err as { status: unknown }).status === 'number'
+        ? (err as { status: number }).status
+        : 500;
+    const message =
+      err instanceof Error
+        ? err.message
+        : 'Unexpected server error while processing API request.';
+    res.status(status).json({ error: message });
+  }
+);
 
 async function startServer() {
   if (!isProduction) {

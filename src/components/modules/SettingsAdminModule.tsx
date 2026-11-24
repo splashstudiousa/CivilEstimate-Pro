@@ -64,7 +64,8 @@ const COLOR_SWATCHES = [
 ];
 
 export const SettingsAdminModule: React.FC = () => {
-  const { project, userRole, roleDefinitions } = useActiveProject();
+  const { project, visibleProjects, userRole, roleDefinitions, activeUser, userMemory } =
+    useActiveProject();
   const companyProfile = useEstimateStore((s) => s.companyProfile);
   const updateCompanyProfile = useEstimateStore((s) => s.updateCompanyProfile);
   const unitSystem = useEstimateStore((s) => s.unitSystem);
@@ -75,11 +76,12 @@ export const SettingsAdminModule: React.FC = () => {
   const updateRoleDefinition = useEstimateStore((s) => s.updateRoleDefinition);
   const updateTeamUser = useEstimateStore((s) => s.updateTeamUser);
   const addTeamUser = useEstimateStore((s) => s.addTeamUser);
-  const projects = useEstimateStore((s) => s.projects);
   const resources = useEstimateStore((s) => s.resources);
   const auditLog = useEstimateStore((s) => s.auditLog);
   const restoreBackup = useEstimateStore((s) => s.restoreBackup);
   const resetDemoData = useEstimateStore((s) => s.resetDemoData);
+  const updateUserMemory = useEstimateStore((s) => s.updateUserMemory);
+  const clearUserMemory = useEstimateStore((s) => s.clearUserMemory);
 
   const isAdmin = normalizeRoleName(userRole) === 'Admin';
   const [selectedRoleId, setSelectedRoleId] = useState<string>(
@@ -197,7 +199,8 @@ export const SettingsAdminModule: React.FC = () => {
     const payload = JSON.stringify(
       {
         exportedAt: new Date().toISOString(),
-        projects,
+        exportedBy: activeUser?.name || 'Workspace',
+        projects: visibleProjects,
         resources,
         companyProfile,
         roleDefinitions,
@@ -745,11 +748,63 @@ export const SettingsAdminModule: React.FC = () => {
           </div>
 
           <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-lg p-5 space-y-3 text-xs">
+            <div className="flex items-center justify-between gap-2">
+              <h2 className="text-sm font-semibold text-slate-900 dark:text-white">
+                Personal Workspace Memory ({activeUser?.name})
+              </h2>
+              <button
+                type="button"
+                onClick={() => clearUserMemory(activeUser?.id)}
+                className="text-[11px] font-medium text-red-600 hover:underline"
+              >
+                Reset My Memory
+              </button>
+            </div>
+            <div className="grid grid-cols-3 gap-2 text-center">
+              <div className="p-2 rounded bg-slate-50 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-700">
+                <div className="font-mono text-sm font-bold text-slate-900 dark:text-white">
+                  {visibleProjects.filter((p) => p.visibility === 'private').length}
+                </div>
+                <div className="text-[10px] text-slate-500">Private Projects</div>
+              </div>
+              <div className="p-2 rounded bg-slate-50 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-700">
+                <div className="font-mono text-sm font-bold text-slate-900 dark:text-white">
+                  {userMemory?.pipelineMappingMemory.length || 0}
+                </div>
+                <div className="text-[10px] text-slate-500">Learned BOQ Rules</div>
+              </div>
+              <div className="p-2 rounded bg-slate-50 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-700">
+                <div className="font-mono text-sm font-bold text-slate-900 dark:text-white">
+                  {userMemory?.pipelineTemplates.length || 0}
+                </div>
+                <div className="text-[10px] text-slate-500">Saved Templates</div>
+              </div>
+            </div>
+            <div>
+              <label className="block text-[11px] text-slate-500 mb-1">
+                Default New Project Visibility
+              </label>
+              <select
+                value={userMemory?.defaultProjectVisibility || 'team'}
+                onChange={(e) =>
+                  updateUserMemory({
+                    defaultProjectVisibility: e.target.value as 'team' | 'private',
+                  })
+                }
+                className="w-full px-3 py-1.5 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded"
+              >
+                <option value="team">Shared Team Workspace</option>
+                <option value="private">Private (Isolated to My Account)</option>
+              </select>
+            </div>
+          </div>
+
+          <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-lg p-5 space-y-3 text-xs">
             <h2 className="text-sm font-semibold text-slate-900 dark:text-white">
-              Offline Local Storage & Backup / Restore
+              Offline Local Storage &amp; Backup / Restore
             </h2>
             <p className="text-slate-500">
-              All projects, markups, WBS schedules, role policies, and rates auto-save locally. Export a portable JSON archive anytime.
+              All accessible projects, markups, WBS schedules, role policies, and personal memory auto-save locally. Export a portable JSON archive anytime.
             </p>
             <div className="flex flex-wrap gap-2">
               <button

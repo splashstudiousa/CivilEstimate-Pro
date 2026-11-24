@@ -53,6 +53,7 @@ import {
 } from '../../types/estimate';
 import { RoleBadge } from '../common/RoleBadge';
 import { TaskBurnUpSummary } from '../common/TaskBurnUpSummary';
+import { hasModulePermission } from '../../data/roles';
 import {
   DictationTargetField,
   VoiceDictationControl,
@@ -94,10 +95,12 @@ const DashboardHeader: React.FC<{
    1. PROJECT MANAGER DASHBOARD
 ============================================================================ */
 export const ProjectManagerDashboard: React.FC = () => {
-  const { project, summary } = useActiveProject();
+  const { project, summary, userRole, activeRoleDef, roleDefinitions } = useActiveProject();
   const setActiveModule = useEstimateStore((s) => s.setActiveModule);
   const updateProjectApprovalStatus = useEstimateStore((s) => s.updateProjectApprovalStatus);
   const updateRABillStatus = useEstimateStore((s) => s.updateRABillStatus);
+  const canOpenSetup = userRole === 'Admin' || activeRoleDef.sidebarModules.includes('setup');
+  const canApprove = hasModulePermission(userRole, 'collaboration', 'approve', roleDefinitions);
 
   const risks = project.risksAndDelays || [];
   const openRisks = risks.filter((r) => r.status === 'Open');
@@ -261,7 +264,7 @@ export const ProjectManagerDashboard: React.FC = () => {
         startDate={project.startDate}
         workingDaysPerWeek={project.calendar.workingDaysPerWeek}
         onOpenSchedule={() => setActiveModule('planner')}
-        onOpenSetup={() => setActiveModule('setup')}
+        onOpenSetup={canOpenSetup ? () => setActiveModule('setup') : undefined}
       />
 
       {/* Pending Approvals + Risk Register + Weekly Progress Report */}
@@ -279,22 +282,24 @@ export const ProjectManagerDashboard: React.FC = () => {
                 {formatCurrency(summary.grandTotal, project.currency)}
               </div>
             </div>
-            <div className="flex items-center gap-1.5">
-              <button
-                type="button"
-                onClick={() => updateProjectApprovalStatus('Approved', 'Approved by Project Manager')}
-                className="px-2.5 py-1 rounded bg-emerald-600 text-white text-[11px] font-semibold"
-              >
-                Approve
-              </button>
-              <button
-                type="button"
-                onClick={() => updateProjectApprovalStatus('Revision Requested', 'PM requested revision')}
-                className="px-2.5 py-1 rounded border border-slate-300 dark:border-slate-600 text-[11px]"
-              >
-                Revise
-              </button>
-            </div>
+            {canApprove && (
+              <div className="flex items-center gap-1.5">
+                <button
+                  type="button"
+                  onClick={() => updateProjectApprovalStatus('Approved', 'Approved by Project Manager')}
+                  className="px-2.5 py-1 rounded bg-emerald-600 text-white text-[11px] font-semibold"
+                >
+                  Approve
+                </button>
+                <button
+                  type="button"
+                  onClick={() => updateProjectApprovalStatus('Revision Requested', 'PM requested revision')}
+                  className="px-2.5 py-1 rounded border border-slate-300 dark:border-slate-600 text-[11px]"
+                >
+                  Revise
+                </button>
+              </div>
+            )}
           </div>
 
           {(project.raBills || []).map((b) => (
@@ -310,7 +315,7 @@ export const ProjectManagerDashboard: React.FC = () => {
                   Net {formatCurrency(b.netPayable, project.currency)}
                 </div>
               </div>
-              {b.status !== 'Approved' && b.status !== 'Paid' && (
+              {canApprove && b.status !== 'Approved' && b.status !== 'Paid' && (
                 <button
                   type="button"
                   onClick={() => updateRABillStatus(b.id, 'Approved')}
@@ -361,9 +366,10 @@ export const ProjectManagerDashboard: React.FC = () => {
    2. PROJECT PLANNER DASHBOARD
 ============================================================================ */
 export const ProjectPlannerDashboard: React.FC = () => {
-  const { project, summary } = useActiveProject();
+  const { project, summary, userRole, activeRoleDef } = useActiveProject();
   const setActiveModule = useEstimateStore((s) => s.setActiveModule);
   const criticalTasks = summary.tasks.filter((t) => t.isCritical);
+  const canOpenSetup = userRole === 'Admin' || activeRoleDef.sidebarModules.includes('setup');
 
   return (
     <div className="space-y-6">
@@ -445,7 +451,7 @@ export const ProjectPlannerDashboard: React.FC = () => {
         startDate={project.startDate}
         workingDaysPerWeek={project.calendar.workingDaysPerWeek}
         onOpenSchedule={() => setActiveModule('planner')}
-        onOpenSetup={() => setActiveModule('setup')}
+        onOpenSetup={canOpenSetup ? () => setActiveModule('setup') : undefined}
       />
     </div>
   );

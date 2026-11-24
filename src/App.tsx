@@ -109,6 +109,14 @@ export default function App() {
         <main className="flex-1 p-4 sm:p-6 max-w-[1600px] w-full mx-auto">
           {renderModule()}
         </main>
+        <footer className="border-t border-slate-200 dark:border-slate-800 bg-white/80 dark:bg-slate-900/70 px-4 sm:px-6 py-3 text-[11px] text-slate-500 dark:text-slate-400 flex flex-col sm:flex-row items-center justify-between gap-2 max-w-[1600px] w-full mx-auto">
+          <div>
+            © {new Date().getFullYear()} <strong className="font-semibold text-slate-700 dark:text-slate-200">Zaim Splash Studio</strong> · All Rights Reserved
+          </div>
+          <div className="font-mono text-[10px] text-slate-400 dark:text-slate-500">
+            CivilEstimate Pro · Engineering Costing &amp; Project Controls
+          </div>
+        </footer>
       </div>
     </div>
   );

@@ -22,6 +22,7 @@ import {
   PipelineTemplate,
   Project,
   ProjectComment,
+  ProjectVisibility,
   PurchaseRequisition,
   QAChecklistItem,
   RABill,
@@ -35,6 +36,7 @@ import {
   TeamUser,
   UnitSystem,
   UserRole,
+  UserWorkspaceMemory,
   VendorInvoice,
   WBSNode,
 } from '../types/estimate';
@@ -68,6 +70,7 @@ interface EstimateState {
     label?: string;
   } | null;
   projects: Project[];
+  userMemories: Record<string, UserWorkspaceMemory>;
   resources: ResourceRate[];
   companyProfile: CompanyProfile;
   auditLog: AuditEntry[];
@@ -83,6 +86,8 @@ interface EstimateState {
   setGlobalSearch: (q: string) => void;
   setActiveProject: (id: string) => void;
   setActiveTraceTarget: (target: EstimateState['activeTraceTarget']) => void;
+  updateUserMemory: (patch: Partial<UserWorkspaceMemory>) => void;
+  clearUserMemory: (userId?: string) => void;
 
   // Role & User Governance
   addCustomRole: (role: Omit<RoleDefinition, 'id'>) => void;
@@ -96,7 +101,17 @@ interface EstimateState {
 
   // Project CRUD & Setup
   updateActiveProject: (patch: Partial<Project>, logAction?: string) => void;
-  createProjectFromTemplate: (templateId: string, customName?: string, country?: CountryCode) => void;
+  createProjectFromTemplate: (
+    templateId: string,
+    customName?: string,
+    country?: CountryCode,
+    visibility?: ProjectVisibility
+  ) => void;
+  setProjectVisibility: (
+    projectId: string,
+    visibility: ProjectVisibility,
+    sharedWithUserIds?: string[]
+  ) => void;
   duplicateActiveProject: () => void;
   deleteProject: (projectId: string) => void;
 
@@ -208,6 +223,23 @@ function makeAudit(
   };
 }
 
+export function canUserAccessProject(project: Project, userId: string): boolean {
+  if (!project.visibility || project.visibility === 'team') return true;
+  if (project.ownerUserId === userId) return true;
+  return Array.isArray(project.sharedWithUserIds) && project.sharedWithUserIds.includes(userId);
+}
+
+function createEmptyUserMemory(userId: string): UserWorkspaceMemory {
+  return {
+    userId,
+    defaultProjectVisibility: 'team',
+    personalNotes: '',
+    pipelineMappingMemory: [],
+    pipelineTemplates: [],
+    updatedAt: new Date().toISOString(),
+  };
+}
+
 export const useEstimateStore = create<EstimateState>()(
   persist(
     (set, get) => {
@@ -250,6 +282,30 @@ export const useEstimateStore = create<EstimateState>()(
         ...(p.notifications || []).slice(0, 49),
       ];
 
+      const patchUserMem = (
+        state: EstimateState,
+        userId: string,
+        patch: Partial<UserWorkspaceMemory>
+      ): Record<string, UserWorkspaceMemory> => {
+        const existing = state.userMemories[userId] || createEmptyUserMemory(userId);
+        return {
+          ...state.userMemories,
+          [userId]: {
+            ...existing,
+            ...patch,
+            userId,
+            updatedAt: new Date().toISOString(),
+          },
+        };
+      };
+
+      const pickFallbackProjectId = (projects: Project[], userId: string): string => {
+        const owned = projects.find((p) => p.ownerUserId === userId && canUserAccessProject(p, userId));
+        if (owned) return owned.id;
+        const accessible = projects.find((p) => canUserAccessProject(p, userId));
+        return accessible?.id || projects[0]?.id || SAMPLE_HOUSE_PROJECT.id;
+      };
+
       return {
         activeModule: 'dashboard',
         theme: 'light',
@@ -261,7 +317,22 @@ export const useEstimateStore = create<EstimateState>()(
         globalSearch: '',
         activeProjectId: SAMPLE_HOUSE_PROJECT.id,
         activeTraceTarget: null,
-        projects: [SAMPLE_HOUSE_PROJECT],
+        projects: [{ ...SAMPLE_HOUSE_PROJECT, visibility: 'team' }],
+        userMemories: {
+          'usr-1': {
+            userId: 'usr-1',
+            activeProjectId: SAMPLE_HOUSE_PROJECT.id,
+            activeModule: 'dashboard',
+            preferredRole: 'Admin',
+            unitSystem: 'imperial',
+            theme: 'light',
+            defaultProjectVisibility: 'team',
+            personalNotes: '',
+            pipelineMappingMemory: [],
+            pipelineTemplates: [],
+            updatedAt: new Date().toISOString(),
+          },
+        },
         resources: DEFAULT_RESOURCES,
         companyProfile: DEFAULT_COMPANY,
         auditLog: [
@@ -287,24 +358,40 @@ export const useEstimateStore = create<EstimateState>()(
         past: [],
         future: [],
 
-        setActiveModule: (activeModule) => set({ activeModule }),
+        setActiveModule: (activeModule) =>
+          set((s) => ({
+            activeModule,
+            userMemories: patchUserMem(s, s.activeUserId, { activeModule }),
+          })),
         setActiveTraceTarget: (activeTraceTarget) => set({ activeTraceTarget }),
 
         toggleTheme: () =>
           set((s) => {
             const next = s.theme === 'light' ? 'dark' : 'light';
-            return { theme: next };
+            return {
+              theme: next,
+              userMemories: patchUserMem(s, s.activeUserId, { theme: next }),
+            };
           }),
 
-        setUnitSystem: (unitSystem) => set({ unitSystem }),
+        setUnitSystem: (unitSystem) =>
+          set((s) => ({
+            unitSystem,
+            userMemories: patchUserMem(s, s.activeUserId, { unitSystem }),
+          })),
 
         setUserRole: (userRole) =>
           set((s) => {
             const def = getRoleDefinition(userRole, s.roleDefinitions);
             const canKeepModule = def.sidebarModules.includes(s.activeModule);
+            const nextModule = canKeepModule ? s.activeModule : 'dashboard';
             return {
               userRole,
-              activeModule: canKeepModule ? s.activeModule : 'dashboard',
+              activeModule: nextModule,
+              userMemories: patchUserMem(s, s.activeUserId, {
+                preferredRole: userRole,
+                activeModule: nextModule,
+              }),
               auditLog: [
                 makeAudit(
                   currentActorName(s),
@@ -317,20 +404,94 @@ export const useEstimateStore = create<EstimateState>()(
             };
           }),
 
-        setActiveUserId: (activeUserId) =>
+        setActiveUserId: (nextUserId) =>
           set((s) => {
-            const usr = s.teamUsers.find((u) => u.id === activeUserId);
-            const nextRole = usr?.assignedRoles[0] || s.userRole;
+            if (nextUserId === s.activeUserId) return s;
+            // Snapshot outgoing user's workspace state
+            const savedMemories = patchUserMem(s, s.activeUserId, {
+              activeProjectId: s.activeProjectId,
+              activeModule: s.activeModule,
+              preferredRole: s.userRole,
+              unitSystem: s.unitSystem,
+              theme: s.theme,
+            });
+
+            const usr = s.teamUsers.find((u) => u.id === nextUserId);
+            const nextMem = savedMemories[nextUserId] || createEmptyUserMemory(nextUserId);
+            const assigned = usr?.assignedRoles || [];
+            const nextRole =
+              nextMem.preferredRole && (assigned.length === 0 || assigned.includes(nextMem.preferredRole))
+                ? nextMem.preferredRole
+                : assigned[0] || s.userRole;
             const def = getRoleDefinition(nextRole, s.roleDefinitions);
+            const desiredModule = nextMem.activeModule || 'dashboard';
+            const nextModule = def.sidebarModules.includes(desiredModule) ? desiredModule : 'dashboard';
+
+            const rememberedProj = s.projects.find((p) => p.id === nextMem.activeProjectId);
+            const nextActiveProjectId =
+              rememberedProj && canUserAccessProject(rememberedProj, nextUserId)
+                ? rememberedProj.id
+                : pickFallbackProjectId(s.projects, nextUserId);
+
             return {
-              activeUserId,
+              activeUserId: nextUserId,
               userRole: nextRole,
-              activeModule: def.sidebarModules.includes(s.activeModule) ? s.activeModule : 'dashboard',
+              activeModule: nextModule,
+              unitSystem: nextMem.unitSystem || s.unitSystem,
+              theme: nextMem.theme || s.theme,
+              activeProjectId: nextActiveProjectId,
+              userMemories: {
+                ...savedMemories,
+                [nextUserId]: {
+                  ...nextMem,
+                  activeProjectId: nextActiveProjectId,
+                  preferredRole: nextRole,
+                  activeModule: nextModule,
+                  updatedAt: new Date().toISOString(),
+                },
+              },
             };
           }),
 
         setGlobalSearch: (globalSearch) => set({ globalSearch }),
-        setActiveProject: (activeProjectId) => set({ activeProjectId }),
+        setActiveProject: (activeProjectId) =>
+          set((s) => {
+            const target = s.projects.find((p) => p.id === activeProjectId);
+            if (!target || !canUserAccessProject(target, s.activeUserId)) return s;
+            return {
+              activeProjectId,
+              userMemories: patchUserMem(s, s.activeUserId, { activeProjectId }),
+            };
+          }),
+
+        updateUserMemory: (patch) =>
+          set((s) => ({
+            userMemories: patchUserMem(s, s.activeUserId, patch),
+          })),
+
+        clearUserMemory: (targetUserId) =>
+          set((s) => {
+            const uid = targetUserId || s.activeUserId;
+            const fresh = createEmptyUserMemory(uid);
+            return {
+              userMemories: {
+                ...s.userMemories,
+                [uid]: {
+                  ...fresh,
+                  activeProjectId: uid === s.activeUserId ? s.activeProjectId : undefined,
+                },
+              },
+              auditLog: [
+                makeAudit(
+                  currentActorName(s),
+                  'Cleared Personal Workspace Memory',
+                  `Reset personal mapping memory, templates & scratchpad for ${uid}`,
+                  s.userRole
+                ),
+                ...s.auditLog.slice(0, 99),
+              ],
+            };
+          }),
 
         addCustomRole: (role) =>
           set((s) => ({
@@ -406,19 +567,65 @@ export const useEstimateStore = create<EstimateState>()(
               : s.auditLog,
           })),
 
-        createProjectFromTemplate: (templateId, customName, country) =>
+        createProjectFromTemplate: (templateId, customName, country, visibility) =>
           set((s) => {
             const tpl = PROJECT_TEMPLATES.find((t) => t.id === templateId) || PROJECT_TEMPLATES[0];
-            const newProj = tpl.buildProject(customName, country);
+            const baseProj = tpl.buildProject(customName, country);
+            const userMem = s.userMemories[s.activeUserId];
+            const resolvedVisibility: ProjectVisibility =
+              visibility || userMem?.defaultProjectVisibility || 'team';
+            const actorName = currentActorName(s);
+            const newProj: Project = {
+              ...baseProj,
+              visibility: resolvedVisibility,
+              ownerUserId: s.activeUserId,
+              ownerName: actorName,
+              sharedWithUserIds: [],
+            };
             return {
               ...pushHistory(s),
               projects: [newProj, ...s.projects],
               activeProjectId: newProj.id,
+              userMemories: patchUserMem(s, s.activeUserId, { activeProjectId: newProj.id }),
               auditLog: [
                 makeAudit(
-                  s.companyProfile.preparedBy,
-                  'Created Project',
-                  `${newProj.name} (${newProj.country || 'Pakistan'}) from ${tpl.name}`
+                  actorName,
+                  resolvedVisibility === 'private' ? 'Created Private Project' : 'Created Project',
+                  `${newProj.name} (${newProj.country || 'Pakistan'}) [${resolvedVisibility}] from ${tpl.name}`,
+                  s.userRole
+                ),
+                ...s.auditLog.slice(0, 99),
+              ],
+            };
+          }),
+
+        setProjectVisibility: (projectId, visibility, sharedWithUserIds) =>
+          set((s) => {
+            const actorName = currentActorName(s);
+            return {
+              ...pushHistory(s),
+              projects: s.projects.map((p) => {
+                if (p.id !== projectId) return p;
+                return {
+                  ...p,
+                  visibility,
+                  ownerUserId: p.ownerUserId || s.activeUserId,
+                  ownerName: p.ownerName || actorName,
+                  sharedWithUserIds:
+                    sharedWithUserIds !== undefined
+                      ? sharedWithUserIds
+                      : visibility === 'team'
+                      ? []
+                      : p.sharedWithUserIds || [],
+                  updatedAt: new Date().toISOString(),
+                };
+              }),
+              auditLog: [
+                makeAudit(
+                  actorName,
+                  'Updated Project Visibility',
+                  `Project ${projectId} set to ${visibility === 'private' ? 'Private Workspace' : 'Shared Team'}`,
+                  s.userRole
                 ),
                 ...s.auditLog.slice(0, 99),
               ],
@@ -429,18 +636,25 @@ export const useEstimateStore = create<EstimateState>()(
           set((s) => {
             const cur = s.projects.find((p) => p.id === s.activeProjectId);
             if (!cur) return s;
+            const actorName = currentActorName(s);
             const copy: Project = JSON.parse(JSON.stringify(cur));
             copy.id = `proj-${Date.now()}`;
             copy.name = `${cur.name} (Copy)`;
             copy.code = `${cur.code}-COPY`;
             copy.approvalStatus = 'Draft';
+            copy.visibility =
+              cur.visibility || s.userMemories[s.activeUserId]?.defaultProjectVisibility || 'team';
+            copy.ownerUserId = s.activeUserId;
+            copy.ownerName = actorName;
+            copy.sharedWithUserIds = [];
             copy.updatedAt = new Date().toISOString();
             return {
               ...pushHistory(s),
               projects: [copy, ...s.projects],
               activeProjectId: copy.id,
+              userMemories: patchUserMem(s, s.activeUserId, { activeProjectId: copy.id }),
               auditLog: [
-                makeAudit(s.companyProfile.preparedBy, 'Duplicated Project', copy.name),
+                makeAudit(actorName, 'Duplicated Project', copy.name, s.userRole),
                 ...s.auditLog.slice(0, 99),
               ],
             };
@@ -448,13 +662,18 @@ export const useEstimateStore = create<EstimateState>()(
 
         deleteProject: (projectId) =>
           set((s) => {
-            if (s.projects.length <= 1) return s;
+            const visibleBefore = s.projects.filter((p) => canUserAccessProject(p, s.activeUserId));
+            if (visibleBefore.length <= 1) return s;
             const remaining = s.projects.filter((p) => p.id !== projectId);
+            const nextVisible = remaining.filter((p) => canUserAccessProject(p, s.activeUserId));
+            if (nextVisible.length === 0) return s;
+            const nextActiveId =
+              s.activeProjectId === projectId ? nextVisible[0].id : s.activeProjectId;
             return {
               ...pushHistory(s),
               projects: remaining,
-              activeProjectId:
-                s.activeProjectId === projectId ? remaining[0].id : s.activeProjectId,
+              activeProjectId: nextActiveId,
+              userMemories: patchUserMem(s, s.activeUserId, { activeProjectId: nextActiveId }),
             };
           }),
 
@@ -1532,35 +1751,52 @@ export const useEstimateStore = create<EstimateState>()(
             .slice(0, 20)
             .map((a) => makeAudit(currentActorName(state), a.action, a.details, state.userRole));
 
-          set((s) => ({
-            ...pushHistory(s),
-            projects: mapActiveProject(s, (p) => ({
-              ...p,
-              drawings: mergedDrawings,
-              measurements: [...p.measurements, ...newRows],
-              pipelineMappingMemory: updatedMemory,
-              pipelineRuns: [pipelineRun, ...(p.pipelineRuns || [])].slice(0, 20),
-              notifications: pushNotification(p, {
-                title: `Drawing Pipeline Committed (${revisionLabel})`,
-                message: `${newRows.length} quantity rows pushed from ${pipelineRun.sheetNames.join(', ')}. Cost Δ ${(afterSummary.grandTotal - beforeSummary.grandTotal).toFixed(0)} ${p.currency}.`,
-                targetRoles: ['Estimator/QS', 'Project Planner', 'Project Manager'],
-                fromUser: currentActorName(s),
-                fromRole: s.userRole,
-                module: 'abstract-cost',
-                priority: 'High',
+          set((s) => {
+            const existingUserMem =
+              s.userMemories[s.activeUserId]?.pipelineMappingMemory || [];
+            let mergedUserMem = [...existingUserMem];
+            if (rememberMappings) {
+              for (const memEntry of updatedMemory) {
+                const idx = mergedUserMem.findIndex(
+                  (m) => m.pattern === memEntry.pattern || m.elementType === memEntry.elementType
+                );
+                if (idx >= 0) mergedUserMem[idx] = memEntry;
+                else mergedUserMem = [memEntry, ...mergedUserMem].slice(0, 80);
+              }
+            }
+            return {
+              ...pushHistory(s),
+              projects: mapActiveProject(s, (p) => ({
+                ...p,
+                drawings: mergedDrawings,
+                measurements: [...p.measurements, ...newRows],
+                pipelineMappingMemory: updatedMemory,
+                pipelineRuns: [pipelineRun, ...(p.pipelineRuns || [])].slice(0, 20),
+                notifications: pushNotification(p, {
+                  title: `Drawing Pipeline Committed (${revisionLabel})`,
+                  message: `${newRows.length} quantity rows pushed from ${pipelineRun.sheetNames.join(', ')}. Cost Δ ${(afterSummary.grandTotal - beforeSummary.grandTotal).toFixed(0)} ${p.currency}.`,
+                  targetRoles: ['Estimator/QS', 'Project Planner', 'Project Manager'],
+                  fromUser: currentActorName(s),
+                  fromRole: s.userRole,
+                  module: 'abstract-cost',
+                  priority: 'High',
+                }),
+              })),
+              userMemories: patchUserMem(s, s.activeUserId, {
+                pipelineMappingMemory: mergedUserMem,
               }),
-            })),
-            auditLog: [
-              makeAudit(
-                currentActorName(state),
-                'Committed Drawing-to-Estimate Pipeline',
-                `${revisionLabel} (${drawingType}): ${newRows.length} rows -> Grand Total ${afterSummary.grandTotal.toFixed(0)}`,
-                state.userRole
-              ),
-              ...extraAudits,
-              ...state.auditLog,
-            ].slice(0, 120),
-          }));
+              auditLog: [
+                makeAudit(
+                  currentActorName(state),
+                  'Committed Drawing-to-Estimate Pipeline',
+                  `${revisionLabel} (${drawingType}): ${newRows.length} rows -> Grand Total ${afterSummary.grandTotal.toFixed(0)}`,
+                  state.userRole
+                ),
+                ...extraAudits,
+                ...state.auditLog,
+              ].slice(0, 120),
+            };
+          });
 
           return {
             runId,
@@ -1572,27 +1808,43 @@ export const useEstimateStore = create<EstimateState>()(
         },
 
         savePipelineTemplate: (template) =>
-          set((s) => ({
-            projects: mapActiveProject(s, (p) => ({
-              ...p,
-              pipelineTemplates: [
-                { ...template, id: `ptpl-${Date.now()}` },
-                ...(p.pipelineTemplates || []).filter((t) => t.name !== template.name),
+          set((s) => {
+            const createdTpl: PipelineTemplate = { ...template, id: `ptpl-${Date.now()}` };
+            const existingUserTpls = s.userMemories[s.activeUserId]?.pipelineTemplates || [];
+            return {
+              projects: mapActiveProject(s, (p) => ({
+                ...p,
+                pipelineTemplates: [
+                  createdTpl,
+                  ...(p.pipelineTemplates || []).filter((t) => t.name !== template.name),
+                ],
+              })),
+              userMemories: patchUserMem(s, s.activeUserId, {
+                pipelineTemplates: [
+                  createdTpl,
+                  ...existingUserTpls.filter((t) => t.name !== template.name),
+                ],
+              }),
+              auditLog: [
+                makeAudit(currentActorName(s), 'Saved Extraction Template', `${template.name} (${template.drawingType})`, s.userRole),
+                ...s.auditLog.slice(0, 99),
               ],
-            })),
-            auditLog: [
-              makeAudit(currentActorName(s), 'Saved Extraction Template', `${template.name} (${template.drawingType})`, s.userRole),
-              ...s.auditLog.slice(0, 99),
-            ],
-          })),
+            };
+          }),
 
         deletePipelineTemplate: (templateId) =>
-          set((s) => ({
-            projects: mapActiveProject(s, (p) => ({
-              ...p,
-              pipelineTemplates: (p.pipelineTemplates || []).filter((t) => t.id !== templateId),
-            })),
-          })),
+          set((s) => {
+            const existingUserTpls = s.userMemories[s.activeUserId]?.pipelineTemplates || [];
+            return {
+              projects: mapActiveProject(s, (p) => ({
+                ...p,
+                pipelineTemplates: (p.pipelineTemplates || []).filter((t) => t.id !== templateId),
+              })),
+              userMemories: patchUserMem(s, s.activeUserId, {
+                pipelineTemplates: existingUserTpls.filter((t) => t.id !== templateId),
+              }),
+            };
+          }),
 
         notifyDraftsmanRevisionUpload: (sheetNames, revisionLabel) =>
           set((s) => ({
@@ -1634,8 +1886,23 @@ export const useEstimateStore = create<EstimateState>()(
 
         resetDemoData: () =>
           set({
-            projects: [SAMPLE_HOUSE_PROJECT],
+            projects: [{ ...SAMPLE_HOUSE_PROJECT, visibility: 'team' }],
             activeProjectId: SAMPLE_HOUSE_PROJECT.id,
+            userMemories: {
+              'usr-1': {
+                userId: 'usr-1',
+                activeProjectId: SAMPLE_HOUSE_PROJECT.id,
+                activeModule: 'dashboard',
+                preferredRole: 'Admin',
+                unitSystem: 'imperial',
+                theme: 'light',
+                defaultProjectVisibility: 'team',
+                personalNotes: '',
+                pipelineMappingMemory: [],
+                pipelineTemplates: [],
+                updatedAt: new Date().toISOString(),
+              },
+            },
             resources: DEFAULT_RESOURCES,
             companyProfile: DEFAULT_COMPANY,
             roleDefinitions: DEFAULT_ROLE_DEFINITIONS,
@@ -1650,7 +1917,7 @@ export const useEstimateStore = create<EstimateState>()(
     },
     {
       name: 'civil-estimate-pro-v2',
-      version: 4,
+      version: 6,
       migrate: (persistedState: unknown, version: number) => {
         const st = (persistedState || {}) as Partial<EstimateState>;
         if (version < 3 && Array.isArray(st.roleDefinitions)) {
@@ -1708,6 +1975,51 @@ export const useEstimateStore = create<EstimateState>()(
             };
           }
         }
+        if (version < 5) {
+          if (Array.isArray(st.projects)) {
+            st.projects = st.projects.map((p) => ({
+              ...p,
+              visibility: p.visibility || 'team',
+            }));
+          }
+          if (!st.userMemories) {
+            const uid = st.activeUserId || 'usr-1';
+            st.userMemories = {
+              [uid]: {
+                userId: uid,
+                activeProjectId: st.activeProjectId || SAMPLE_HOUSE_PROJECT.id,
+                activeModule: st.activeModule || 'dashboard',
+                preferredRole: st.userRole || 'Admin',
+                unitSystem: st.unitSystem || 'imperial',
+                theme: st.theme || 'light',
+                defaultProjectVisibility: 'team',
+                personalNotes: '',
+                pipelineMappingMemory: [],
+                pipelineTemplates: [],
+                updatedAt: new Date().toISOString(),
+              },
+            };
+          }
+        }
+        if (version < 6 && Array.isArray(st.roleDefinitions)) {
+          const defaultMap = new Map(DEFAULT_ROLE_DEFINITIONS.map((r) => [r.name, r]));
+          st.roleDefinitions = st.roleDefinitions.map((role) => {
+            if (role.isCustom) return role;
+            const def = defaultMap.get(role.name);
+            if (!def) return role;
+            return {
+              ...role,
+              sidebarModules: def.sidebarModules,
+              permissions: def.permissions,
+            };
+          });
+          if (st.userRole && st.activeModule) {
+            const activeDef = getRoleDefinition(st.userRole, st.roleDefinitions);
+            if (!activeDef.sidebarModules.includes(st.activeModule)) {
+              st.activeModule = 'dashboard';
+            }
+          }
+        }
         return st as EstimateState;
       },
       partialize: (state) => ({
@@ -1719,6 +2031,7 @@ export const useEstimateStore = create<EstimateState>()(
         teamUsers: state.teamUsers,
         activeProjectId: state.activeProjectId,
         projects: state.projects,
+        userMemories: state.userMemories,
         resources: state.resources,
         companyProfile: state.companyProfile,
         auditLog: state.auditLog,

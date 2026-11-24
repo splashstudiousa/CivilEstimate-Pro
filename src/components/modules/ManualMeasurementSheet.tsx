@@ -19,11 +19,21 @@ import {
   toMetricLength,
 } from '../../engine/formatters';
 import { WORK_CATEGORIES, WorkCategory } from '../../types/estimate';
+import { hasModulePermission } from '../../data/roles';
 
 type CalcTab = 'concrete' | 'steel' | 'brick' | 'plaster' | 'excavation';
 
 export const ManualMeasurementSheet: React.FC = () => {
-  const { project, summary, unitSystem } = useActiveProject();
+  const { project, summary, unitSystem, userRole, activeRoleDef, roleDefinitions } =
+    useActiveProject();
+  const canCreateMeas = hasModulePermission(userRole, 'measurements', 'create', roleDefinitions);
+  const canEditMeas = hasModulePermission(userRole, 'measurements', 'edit', roleDefinitions);
+  const canDeleteMeas = hasModulePermission(userRole, 'measurements', 'delete', roleDefinitions);
+  const canCreateBoq = hasModulePermission(userRole, 'abstract-cost', 'create', roleDefinitions);
+  const canOpenDrawing =
+    userRole === 'Admin' ||
+    activeRoleDef.sidebarModules.includes('takeoff') ||
+    activeRoleDef.sidebarModules.includes('pipeline');
   const addMeasurement = useEstimateStore((s) => s.addMeasurement);
   const updateMeasurement = useEstimateStore((s) => s.updateMeasurement);
   const deleteMeasurement = useEstimateStore((s) => s.deleteMeasurement);
@@ -234,32 +244,36 @@ export const ManualMeasurementSheet: React.FC = () => {
             <span>Engineering Calculators</span>
           </button>
 
-          <button
-            type="button"
-            onClick={() => setShowPasteModal(true)}
-            className="inline-flex items-center gap-1.5 px-3 py-2 rounded-md border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-xs font-medium text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-800 whitespace-nowrap"
-          >
-            <ClipboardPaste className="w-3.5 h-3.5 text-sky-600" />
-            <span>Paste Excel</span>
-          </button>
+          {canCreateMeas && (
+            <>
+              <button
+                type="button"
+                onClick={() => setShowPasteModal(true)}
+                className="inline-flex items-center gap-1.5 px-3 py-2 rounded-md border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-xs font-medium text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-800 whitespace-nowrap"
+              >
+                <ClipboardPaste className="w-3.5 h-3.5 text-sky-600" />
+                <span>Paste Excel</span>
+              </button>
 
-          <button
-            type="button"
-            onClick={() => handleAddRow(true)}
-            className="inline-flex items-center gap-1.5 px-3 py-2 rounded-md border border-red-200 dark:border-red-900/60 bg-white dark:bg-slate-900 text-xs font-medium text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-950/30 whitespace-nowrap"
-          >
-            <MinusCircle className="w-3.5 h-3.5" />
-            <span>Add Deduction</span>
-          </button>
+              <button
+                type="button"
+                onClick={() => handleAddRow(true)}
+                className="inline-flex items-center gap-1.5 px-3 py-2 rounded-md border border-red-200 dark:border-red-900/60 bg-white dark:bg-slate-900 text-xs font-medium text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-950/30 whitespace-nowrap"
+              >
+                <MinusCircle className="w-3.5 h-3.5" />
+                <span>Add Deduction</span>
+              </button>
 
-          <button
-            type="button"
-            onClick={() => handleAddRow(false)}
-            className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-md bg-orange-600 hover:bg-orange-700 text-white text-xs font-semibold whitespace-nowrap"
-          >
-            <Plus className="w-3.5 h-3.5" />
-            <span>Add Measurement</span>
-          </button>
+              <button
+                type="button"
+                onClick={() => handleAddRow(false)}
+                className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-md bg-orange-600 hover:bg-orange-700 text-white text-xs font-semibold whitespace-nowrap"
+              >
+                <Plus className="w-3.5 h-3.5" />
+                <span>Add Measurement</span>
+              </button>
+            </>
+          )}
         </div>
       </div>
 
@@ -700,13 +714,15 @@ export const ManualMeasurementSheet: React.FC = () => {
               className="pl-8 pr-3 py-1.5 text-xs bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-md text-slate-900 dark:text-white w-48"
             />
           </div>
-          <button
-            type="button"
-            onClick={() => setShowNewBoq(true)}
-            className="px-2.5 py-1.5 rounded-md border border-slate-200 dark:border-slate-700 text-xs font-medium text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-800 whitespace-nowrap"
-          >
-            + New BOQ Item
-          </button>
+          {canCreateBoq && (
+            <button
+              type="button"
+              onClick={() => setShowNewBoq(true)}
+              className="px-2.5 py-1.5 rounded-md border border-slate-200 dark:border-slate-700 text-xs font-medium text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-800 whitespace-nowrap"
+            >
+              + New BOQ Item
+            </button>
+          )}
         </div>
       </div>
 
@@ -737,7 +753,9 @@ export const ManualMeasurementSheet: React.FC = () => {
                 <th className="py-2.5 px-2.5 text-left font-semibold min-w-[150px]">
                   Source / Remarks
                 </th>
-                <th className="py-2.5 px-2 text-center font-semibold w-12">Act</th>
+                {canDeleteMeas && (
+                  <th className="py-2.5 px-2 text-center font-semibold w-12">Act</th>
+                )}
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
@@ -872,11 +890,11 @@ export const ManualMeasurementSheet: React.FC = () => {
                     <td className="p-1.5 text-center font-mono text-slate-500">{conv.unit}</td>
                     <td className="p-1.5">
                       <div className="flex items-center gap-1.5">
-                        {row.sourceDrawingName && (
+                        {row.sourceDrawingName && canOpenDrawing && (
                           <button
                             type="button"
                             onClick={() => {
-                              if (row.sourceCoords) {
+                              if (row.sourceCoords && activeRoleDef.sidebarModules.includes('pipeline')) {
                                 setActiveTraceTarget({
                                   drawingId: row.sourceDrawingId || '',
                                   drawingName: row.sourceDrawingName || '',
@@ -897,22 +915,25 @@ export const ManualMeasurementSheet: React.FC = () => {
                         )}
                         <input
                           type="text"
+                          readOnly={!canEditMeas}
                           value={row.remarks}
                           onChange={(e) => updateMeasurement(row.id, { remarks: e.target.value })}
                           className="w-full px-1.5 py-1 bg-transparent border border-transparent hover:border-slate-200 dark:hover:border-slate-700 focus:border-orange-500 rounded text-slate-500 dark:text-slate-400"
                         />
                       </div>
                     </td>
-                    <td className="p-1.5 text-center">
-                      <button
-                        type="button"
-                        onClick={() => deleteMeasurement(row.id)}
-                        className="p-1 text-slate-400 hover:text-red-600 rounded"
-                        aria-label="Delete measurement row"
-                      >
-                        <Trash2 className="w-3.5 h-3.5" />
-                      </button>
-                    </td>
+                    {canDeleteMeas && (
+                      <td className="p-1.5 text-center">
+                        <button
+                          type="button"
+                          onClick={() => deleteMeasurement(row.id)}
+                          className="p-1 text-slate-400 hover:text-red-600 rounded"
+                          aria-label="Delete measurement row"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
+                      </td>
+                    )}
                   </tr>
                 );
               })}

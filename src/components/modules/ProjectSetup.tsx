@@ -1,11 +1,12 @@
 import React, { useState } from 'react';
-import { CheckCircle2, Copy, Globe2, MessageSquare, Plus, RefreshCw, Trash2 } from 'lucide-react';
+import { CheckCircle2, Copy, Globe2, Lock, MessageSquare, Plus, RefreshCw, Trash2, Users } from 'lucide-react';
 import { useActiveProject } from '../../hooks/useActiveProject';
 import { useEstimateStore } from '../../store/useEstimateStore';
 import {
   ApprovalStatus,
   CountryCode,
   CurrencyCode,
+  ProjectVisibility,
   RateScheduleType,
 } from '../../types/estimate';
 import {
@@ -29,11 +30,13 @@ const APPROVAL_STATES: ApprovalStatus[] = [
 ];
 
 export const ProjectSetup: React.FC = () => {
-  const { project, summary, unitSystem } = useActiveProject();
-  const projects = useEstimateStore((s) => s.projects);
+  const { project, visibleProjects, summary, unitSystem, activeUser, userRole, userMemory } =
+    useActiveProject();
+  const teamUsers = useEstimateStore((s) => s.teamUsers);
   const updateActiveProject = useEstimateStore((s) => s.updateActiveProject);
   const setUnitSystem = useEstimateStore((s) => s.setUnitSystem);
   const createProjectFromTemplate = useEstimateStore((s) => s.createProjectFromTemplate);
+  const setProjectVisibility = useEstimateStore((s) => s.setProjectVisibility);
   const duplicateActiveProject = useEstimateStore((s) => s.duplicateActiveProject);
   const deleteProject = useEstimateStore((s) => s.deleteProject);
   const addComment = useEstimateStore((s) => s.addComment);
@@ -48,7 +51,15 @@ export const ProjectSetup: React.FC = () => {
   const [newProjName, setNewProjName] = useState('');
   const [templateCountry, setTemplateCountry] = useState<CountryCode>(activeCountry);
   const [selectedTemplate, setSelectedTemplate] = useState(PROJECT_TEMPLATES[0].id);
+  const [newProjVisibility, setNewProjVisibility] = useState<ProjectVisibility>(
+    userMemory?.defaultProjectVisibility || 'team'
+  );
   const [customTypeMode, setCustomTypeMode] = useState(false);
+
+  const canManagePrivacy =
+    !project.ownerUserId ||
+    project.ownerUserId === activeUser?.id ||
+    userRole === 'Admin';
 
   const handleCountryChange = (nextCountry: CountryCode) => {
     const nextProfile = getCountryProfile(nextCountry);
@@ -113,7 +124,7 @@ export const ProjectSetup: React.FC = () => {
             <Copy className="w-3.5 h-3.5" />
             <span>Duplicate Project</span>
           </button>
-          {projects.length > 1 && (
+          {visibleProjects.length > 1 && (
             <button
               type="button"
               onClick={() => deleteProject(project.id)}
@@ -328,6 +339,88 @@ export const ProjectSetup: React.FC = () => {
             </div>
           </div>
 
+          {/* Privacy, Ownership & Colleague Access */}
+          <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-lg p-5 space-y-3">
+            <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
+              <div>
+                <h2 className="text-sm font-semibold text-slate-900 dark:text-white flex items-center gap-2">
+                  {project.visibility === 'private' ? (
+                    <Lock className="w-4 h-4 text-orange-600" />
+                  ) : (
+                    <Users className="w-4 h-4 text-sky-600" />
+                  )}
+                  <span>Project Privacy &amp; Personal Workspace Access</span>
+                </h2>
+                <p className="text-xs text-slate-500 dark:text-slate-400">
+                  Owner: <strong className="text-slate-700 dark:text-slate-200">{project.ownerName || activeUser?.name || 'Team Shared'}</strong> · Private projects stay isolated in your own workspace memory.
+                </p>
+              </div>
+              <div className="inline-flex p-0.5 rounded-md bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-xs">
+                <button
+                  type="button"
+                  disabled={!canManagePrivacy}
+                  onClick={() => setProjectVisibility(project.id, 'team')}
+                  className={`px-3 py-1 rounded font-medium transition-colors disabled:opacity-50 ${
+                    project.visibility !== 'private'
+                      ? 'bg-white dark:bg-slate-900 text-slate-900 dark:text-white shadow-xs'
+                      : 'text-slate-500 dark:text-slate-400'
+                  }`}
+                >
+                  Shared Team
+                </button>
+                <button
+                  type="button"
+                  disabled={!canManagePrivacy}
+                  onClick={() => setProjectVisibility(project.id, 'private')}
+                  className={`px-3 py-1 rounded font-medium transition-colors disabled:opacity-50 ${
+                    project.visibility === 'private'
+                      ? 'bg-orange-600 text-white shadow-xs'
+                      : 'text-slate-500 dark:text-slate-400'
+                  }`}
+                >
+                  Private Only
+                </button>
+              </div>
+            </div>
+
+            {project.visibility === 'private' && (
+              <div className="pt-2 border-t border-slate-100 dark:border-slate-800">
+                <div className="text-[11px] font-medium text-slate-600 dark:text-slate-300 mb-2">
+                  Optional Co-Editors (leave unchecked to keep strictly private to {project.ownerName || activeUser?.name}):
+                </div>
+                <div className="flex flex-wrap gap-2">
+                  {teamUsers
+                    .filter((u) => u.id !== (project.ownerUserId || activeUser?.id))
+                    .map((u) => {
+                      const shared = (project.sharedWithUserIds || []).includes(u.id);
+                      return (
+                        <button
+                          key={u.id}
+                          type="button"
+                          disabled={!canManagePrivacy}
+                          onClick={() => {
+                            const cur = project.sharedWithUserIds || [];
+                            const next = shared
+                              ? cur.filter((id) => id !== u.id)
+                              : [...cur, u.id];
+                            setProjectVisibility(project.id, 'private', next);
+                          }}
+                          className={`px-2.5 py-1 rounded border text-[11px] font-medium transition-colors disabled:opacity-50 ${
+                            shared
+                              ? 'border-orange-500 bg-orange-50 dark:bg-orange-950/30 text-orange-700 dark:text-orange-300'
+                              : 'border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-400 hover:bg-slate-50 dark:hover:bg-slate-800'
+                          }`}
+                        >
+                          {shared ? '✓ ' : '+ '}
+                          {u.name}
+                        </button>
+                      );
+                    })}
+                </div>
+              </div>
+            )}
+          </div>
+
           {/* Financial Markups & Contingency */}
           <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-lg p-5">
             <div className="flex items-center justify-between mb-4">
@@ -539,20 +632,57 @@ export const ProjectSetup: React.FC = () => {
                 ))}
               </div>
 
+              <div>
+                <label className="block text-xs font-medium text-slate-600 dark:text-slate-300 mb-1">
+                  Workspace Visibility
+                </label>
+                <div className="grid grid-cols-2 gap-2 text-xs">
+                  <button
+                    type="button"
+                    onClick={() => setNewProjVisibility('private')}
+                    className={`flex items-center justify-center gap-1.5 py-2 px-3 rounded-md border font-medium transition-colors ${
+                      newProjVisibility === 'private'
+                        ? 'border-orange-500 bg-orange-50/70 dark:bg-orange-950/30 text-orange-700 dark:text-orange-300'
+                        : 'border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300'
+                    }`}
+                  >
+                    <Lock className="w-3.5 h-3.5" />
+                    <span>Private (Mine Only)</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setNewProjVisibility('team')}
+                    className={`flex items-center justify-center gap-1.5 py-2 px-3 rounded-md border font-medium transition-colors ${
+                      newProjVisibility === 'team'
+                        ? 'border-orange-500 bg-orange-50/70 dark:bg-orange-950/30 text-orange-700 dark:text-orange-300'
+                        : 'border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300'
+                    }`}
+                  >
+                    <Users className="w-3.5 h-3.5" />
+                    <span>Shared Team</span>
+                  </button>
+                </div>
+              </div>
+
               <button
                 type="button"
                 onClick={() => {
                   createProjectFromTemplate(
                     selectedTemplate,
                     newProjName.trim() || undefined,
-                    templateCountry
+                    templateCountry,
+                    newProjVisibility
                   );
                   setNewProjName('');
                 }}
                 className="w-full inline-flex items-center justify-center gap-1.5 px-4 py-2.5 rounded-md bg-orange-600 hover:bg-orange-700 text-white text-xs font-semibold transition-colors"
               >
                 <Plus className="w-4 h-4" />
-                <span>Create & Switch to Project</span>
+                <span>
+                  {newProjVisibility === 'private'
+                    ? 'Create Private Project'
+                    : 'Create & Switch to Project'}
+                </span>
               </button>
             </div>
           </div>

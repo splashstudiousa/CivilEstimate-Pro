@@ -191,9 +191,9 @@ export const Sidebar: React.FC<SidebarProps> = ({ mobileOpen, onCloseMobile }) =
         })}
       </nav>
 
-      {/* Bottom Quick Action */}
-      {allowedSet.has('reports') && (
-        <div className="p-3 border-t border-slate-800/90 shrink-0">
+      {/* Bottom Quick Action & Copyright */}
+      <div className="p-3 border-t border-slate-800/90 shrink-0 space-y-2.5">
+        {allowedSet.has('reports') && (
           <button
             type="button"
             onClick={() => handleSelect('reports')}
@@ -202,8 +202,11 @@ export const Sidebar: React.FC<SidebarProps> = ({ mobileOpen, onCloseMobile }) =
             <BarChart3 className="w-3.5 h-3.5 text-orange-400 shrink-0" />
             <span>Export Reports Package</span>
           </button>
+        )}
+        <div className="text-[10px] text-slate-500 text-center">
+          © {new Date().getFullYear()} Zaim Splash Studio
         </div>
-      )}
+      </div>
     </div>
   );
 

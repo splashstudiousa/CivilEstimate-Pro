@@ -663,9 +663,22 @@ export const DrawingTakeoffModule: React.FC = () => {
           drawingName: activeDrawing.name,
         }),
       });
-      const data = await resp.json();
+      const rawText = await resp.text();
+      let data: {
+        error?: string;
+        summary?: string;
+        suggestions?: Array<Record<string, unknown>>;
+      } = {};
+      try {
+        data = rawText ? JSON.parse(rawText) : {};
+      } catch {
+        const snippet = rawText.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 140);
+        throw new Error(
+          `Server returned a non-JSON response (HTTP ${resp.status})${snippet ? `: ${snippet}` : '.'}`
+        );
+      }
       if (!resp.ok) {
-        throw new Error(data.error || 'AI drawing extraction failed.');
+        throw new Error(data.error || `AI drawing extraction failed (HTTP ${resp.status}).`);
       }
 
       setAiSummary(data.summary || 'Extracted structural and architectural elements.');

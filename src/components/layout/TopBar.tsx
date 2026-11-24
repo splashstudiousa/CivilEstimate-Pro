@@ -4,6 +4,7 @@ import {
   Bell,
   Check,
   ChevronDown,
+  Lock,
   Menu,
   Moon,
   Plus,
@@ -24,10 +25,19 @@ interface TopBarProps {
 }
 
 export const TopBar: React.FC<TopBarProps> = ({ onOpenMobileMenu }) => {
-  const { project, summary, userRole, activeRoleDef, activeUser, roleDefinitions } =
-    useActiveProject();
-  const projects = useEstimateStore((s) => s.projects);
+  const {
+    project,
+    visibleProjects,
+    summary,
+    userRole,
+    activeRoleDef,
+    activeUser,
+    roleDefinitions,
+    userMemory,
+    isPrivateProject,
+  } = useActiveProject();
   const teamUsers = useEstimateStore((s) => s.teamUsers);
+  const activeModule = useEstimateStore((s) => s.activeModule);
   const setActiveProject = useEstimateStore((s) => s.setActiveProject);
   const updateActiveProject = useEstimateStore((s) => s.updateActiveProject);
   const setActiveModule = useEstimateStore((s) => s.setActiveModule);
@@ -65,18 +75,42 @@ export const TopBar: React.FC<TopBarProps> = ({ onOpenMobileMenu }) => {
     ? roleDefinitions.filter((r) => activeUser.assignedRoles.includes(r.name))
     : roleDefinitions;
 
+  const allowedModules = new Set(activeRoleDef.sidebarModules);
+  const canSeeAllNotifs = userRole === 'Admin' || userRole === 'Project Manager';
   const allNotifications = project.notifications || [];
   const roleNotifications =
-    notifScope === 'all' || userRole === 'Admin'
+    userRole === 'Admin' || (canSeeAllNotifs && notifScope === 'all')
       ? allNotifications
       : allNotifications.filter((n) => n.targetRoles.includes(userRole));
 
   const unreadRoleNotifs = allNotifications.filter(
     (n) => (userRole === 'Admin' || n.targetRoles.includes(userRole)) && !n.readByRoles.includes(userRole)
   );
-  const totalBadgeCount = unreadRoleNotifs.length + summary.alerts.length;
+  const visibleAlerts = summary.alerts.filter(
+    (al) => userRole === 'Admin' || allowedModules.has(al.module)
+  );
+  const totalBadgeCount = unreadRoleNotifs.length + visibleAlerts.length;
 
   const canEditProject = hasModulePermission(userRole, 'setup', 'edit', roleDefinitions);
+  const canUndoRedo =
+    activeModule === 'dashboard'
+      ? userRole !== 'Client/Viewer'
+      : hasModulePermission(userRole, activeModule, 'edit', roleDefinitions);
+  const showUnitSwitch =
+    userRole !== 'Finance/Accounts' &&
+    userRole !== 'Procurement' &&
+    userRole !== 'Client/Viewer';
+  const showSearch = userRole !== 'Client/Viewer';
+  const searchPlaceholder =
+    userRole === 'Estimator/QS'
+      ? 'Search BOQ, takeoff, rates...'
+      : userRole === 'Project Manager' || userRole === 'Project Planner'
+      ? 'Search activities, BOQ, tasks...'
+      : userRole === 'Procurement'
+      ? 'Search materials, BOQ...'
+      : userRole === 'Finance/Accounts'
+      ? 'Search BOQ, cost items...'
+      : 'Search BOQ, tasks, rates...';
 
   return (
     <header className="h-16 bg-white dark:bg-slate-900 border-b border-slate-200 dark:border-slate-800 px-4 lg:px-6 flex items-center justify-between gap-3 sticky top-0 z-20 shrink-0">
@@ -93,14 +127,23 @@ export const TopBar: React.FC<TopBarProps> = ({ onOpenMobileMenu }) => {
 
         <div className="flex items-center gap-2 min-w-0">
           <div className="relative flex items-center">
+            {isPrivateProject && (
+              <Lock
+                className="w-3.5 h-3.5 text-orange-600 absolute left-2.5 pointer-events-none"
+                aria-label="Private project"
+              />
+            )}
             <select
               aria-label="Active project selector"
               value={project.id}
               onChange={(e) => setActiveProject(e.target.value)}
-              className="appearance-none bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-900 dark:text-slate-100 text-xs sm:text-sm font-semibold rounded-md pl-3 pr-8 py-1.5 max-w-[180px] sm:max-w-[260px] truncate focus:outline-none focus:ring-2 focus:ring-orange-500 cursor-pointer"
+              className={`appearance-none bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-900 dark:text-slate-100 text-xs sm:text-sm font-semibold rounded-md pr-8 py-1.5 max-w-[180px] sm:max-w-[260px] truncate focus:outline-none focus:ring-2 focus:ring-orange-500 cursor-pointer ${
+                isPrivateProject ? 'pl-7' : 'pl-3'
+              }`}
             >
-              {projects.map((p) => (
+              {visibleProjects.map((p) => (
                 <option key={p.id} value={p.id}>
+                  {p.visibility === 'private' ? '[Private] ' : ''}
                   {p.code} — {p.name}
                 </option>
               ))}
@@ -121,7 +164,7 @@ export const TopBar: React.FC<TopBarProps> = ({ onOpenMobileMenu }) => {
           )}
         </div>
 
-        {userRole !== 'Client/Viewer' && (
+        {canUndoRedo && (
           <div className="hidden lg:flex items-center gap-1 border-l border-slate-200 dark:border-slate-800 pl-2.5">
             <button
               type="button"
@@ -148,62 +191,71 @@ export const TopBar: React.FC<TopBarProps> = ({ onOpenMobileMenu }) => {
       {/* Right: Search, Currency, Units, Role/Department Switcher, Notifications, Theme */}
       <div className="flex items-center gap-2 sm:gap-2.5 shrink-0">
         {/* Global Search */}
-        <div className="hidden xl:flex items-center relative">
-          <Search className="w-3.5 h-3.5 text-slate-400 absolute left-2.5 pointer-events-none" />
-          <input
-            type="search"
-            value={globalSearch}
-            onChange={(e) => setGlobalSearch(e.target.value)}
-            placeholder="Search BOQ, tasks, rates..."
-            className="w-40 2xl:w-52 pl-8 pr-3 py-1.5 text-xs bg-slate-50 dark:bg-slate-800/80 border border-slate-200 dark:border-slate-700 rounded-md text-slate-900 dark:text-slate-100 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-orange-500"
-          />
-        </div>
+        {showSearch && (
+          <div className="hidden xl:flex items-center relative">
+            <Search className="w-3.5 h-3.5 text-slate-400 absolute left-2.5 pointer-events-none" />
+            <input
+              type="search"
+              value={globalSearch}
+              onChange={(e) => setGlobalSearch(e.target.value)}
+              placeholder={searchPlaceholder}
+              className="w-40 2xl:w-52 pl-8 pr-3 py-1.5 text-xs bg-slate-50 dark:bg-slate-800/80 border border-slate-200 dark:border-slate-700 rounded-md text-slate-900 dark:text-slate-100 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-orange-500"
+            />
+          </div>
+        )}
 
-        {/* Currency Quick Switch */}
-        <select
-          aria-label="Project currency"
-          value={project.currency}
-          disabled={!canEditProject}
-          onChange={(e) => updateActiveProject({ currency: e.target.value as CurrencyCode })}
-          className="hidden md:block px-2 py-1 text-[11px] font-mono font-semibold bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-md text-slate-900 dark:text-slate-100 cursor-pointer disabled:opacity-70"
-        >
-          <option value="PKR">PKR (Rs.)</option>
-          <option value="USD">USD ($)</option>
-          <option value="INR">INR (₹)</option>
-          <option value="EUR">EUR (€)</option>
-          <option value="GBP">GBP (£)</option>
-          <option value="AED">AED</option>
-        </select>
+        {/* Currency Quick Switch (Editable for Setup/Admin, clean label for others) */}
+        {canEditProject ? (
+          <select
+            aria-label="Project currency"
+            value={project.currency}
+            onChange={(e) => updateActiveProject({ currency: e.target.value as CurrencyCode })}
+            className="hidden md:block px-2 py-1 text-[11px] font-mono font-semibold bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-md text-slate-900 dark:text-slate-100 cursor-pointer"
+          >
+            <option value="PKR">PKR (Rs.)</option>
+            <option value="USD">USD ($)</option>
+            <option value="INR">INR (₹)</option>
+            <option value="EUR">EUR (€)</option>
+            <option value="GBP">GBP (£)</option>
+            <option value="AED">AED</option>
+          </select>
+        ) : (
+          <span className="hidden md:inline-block px-2 py-1 text-[11px] font-mono font-semibold text-slate-600 dark:text-slate-300 border border-slate-200 dark:border-slate-700 rounded-md bg-slate-50 dark:bg-slate-800/60">
+            {project.currency}
+          </span>
+        )}
 
         {/* Unit System Segmented Switch */}
-        <div
-          className="hidden lg:flex items-center p-0.5 bg-slate-100 dark:bg-slate-800 rounded-md border border-slate-200 dark:border-slate-700"
-          role="group"
-          aria-label="Unit system"
-        >
-          <button
-            type="button"
-            onClick={() => setUnitSystem('imperial')}
-            className={`px-2 py-1 text-[11px] font-medium rounded transition-colors whitespace-nowrap ${
-              unitSystem === 'imperial'
-                ? 'bg-white dark:bg-slate-900 text-slate-900 dark:text-white shadow-xs'
-                : 'text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
-            }`}
+        {showUnitSwitch && (
+          <div
+            className="hidden lg:flex items-center p-0.5 bg-slate-100 dark:bg-slate-800 rounded-md border border-slate-200 dark:border-slate-700"
+            role="group"
+            aria-label="Unit system"
           >
-            FPS (ft)
-          </button>
-          <button
-            type="button"
-            onClick={() => setUnitSystem('metric')}
-            className={`px-2 py-1 text-[11px] font-medium rounded transition-colors whitespace-nowrap ${
-              unitSystem === 'metric'
-                ? 'bg-white dark:bg-slate-900 text-slate-900 dark:text-white shadow-xs'
-                : 'text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
-            }`}
-          >
-            SI (m)
-          </button>
-        </div>
+            <button
+              type="button"
+              onClick={() => setUnitSystem('imperial')}
+              className={`px-2 py-1 text-[11px] font-medium rounded transition-colors whitespace-nowrap ${
+                unitSystem === 'imperial'
+                  ? 'bg-white dark:bg-slate-900 text-slate-900 dark:text-white shadow-xs'
+                  : 'text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
+              }`}
+            >
+              FPS (ft)
+            </button>
+            <button
+              type="button"
+              onClick={() => setUnitSystem('metric')}
+              className={`px-2 py-1 text-[11px] font-medium rounded transition-colors whitespace-nowrap ${
+                unitSystem === 'metric'
+                  ? 'bg-white dark:bg-slate-900 text-slate-900 dark:text-white shadow-xs'
+                  : 'text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
+              }`}
+            >
+              SI (m)
+            </button>
+          </div>
+        )}
 
         {/* Notifications (Filtered by Active Role) */}
         <div className="relative" ref={notifRef}>
@@ -231,13 +283,15 @@ export const TopBar: React.FC<TopBarProps> = ({ onOpenMobileMenu }) => {
                   <RoleBadge role={userRole} compact />
                 </div>
                 <div className="flex items-center gap-1.5">
-                  <button
-                    type="button"
-                    onClick={() => setNotifScope((s) => (s === 'role' ? 'all' : 'role'))}
-                    className="text-[11px] font-medium text-slate-500 hover:text-slate-900 dark:hover:text-white"
-                  >
-                    {notifScope === 'role' ? 'Show All' : 'Filter by Role'}
-                  </button>
+                  {canSeeAllNotifs && userRole !== 'Admin' && (
+                    <button
+                      type="button"
+                      onClick={() => setNotifScope((s) => (s === 'role' ? 'all' : 'role'))}
+                      className="text-[11px] font-medium text-slate-500 hover:text-slate-900 dark:hover:text-white"
+                    >
+                      {notifScope === 'role' ? 'Show All' : 'Filter by Role'}
+                    </button>
+                  )}
                   {unreadRoleNotifs.length > 0 && (
                     <button
                       type="button"
@@ -253,13 +307,19 @@ export const TopBar: React.FC<TopBarProps> = ({ onOpenMobileMenu }) => {
               <div className="divide-y divide-slate-100 dark:divide-slate-800 max-h-80 overflow-y-auto">
                 {roleNotifications.map((n) => {
                   const isRead = n.readByRoles.includes(userRole);
+                  const targetMod =
+                    userRole === 'Admin' || allowedModules.has(n.module)
+                      ? n.module
+                      : allowedModules.has('collaboration')
+                      ? 'collaboration'
+                      : 'dashboard';
                   return (
                     <button
                       key={n.id}
                       type="button"
                       onClick={() => {
                         markNotificationRead(n.id);
-                        setActiveModule(n.module);
+                        setActiveModule(targetMod);
                         setShowNotif(false);
                       }}
                       className={`w-full text-left px-4 py-3 hover:bg-slate-50 dark:hover:bg-slate-800/60 transition-colors ${
@@ -283,7 +343,7 @@ export const TopBar: React.FC<TopBarProps> = ({ onOpenMobileMenu }) => {
                   );
                 })}
 
-                {summary.alerts.map((al) => (
+                {visibleAlerts.map((al) => (
                   <button
                     key={al.id}
                     type="button"
@@ -313,7 +373,7 @@ export const TopBar: React.FC<TopBarProps> = ({ onOpenMobileMenu }) => {
                   </button>
                 ))}
 
-                {roleNotifications.length === 0 && summary.alerts.length === 0 && (
+                {roleNotifications.length === 0 && visibleAlerts.length === 0 && (
                   <div className="p-4 text-xs text-slate-500">
                     No pending alerts or handoffs for {userRole}.
                   </div>
@@ -400,6 +460,20 @@ export const TopBar: React.FC<TopBarProps> = ({ onOpenMobileMenu }) => {
                     </option>
                   ))}
                 </select>
+                <div className="mt-1.5 flex items-center justify-between text-[10px] text-slate-500 dark:text-slate-400">
+                  <span>
+                    Memory:{' '}
+                    <strong className="font-mono text-slate-700 dark:text-slate-200">
+                      {visibleProjects.filter((p) => p.visibility === 'private').length}
+                    </strong>{' '}
+                    private ·{' '}
+                    <strong className="font-mono text-slate-700 dark:text-slate-200">
+                      {userMemory?.pipelineMappingMemory.length || 0}
+                    </strong>{' '}
+                    BOQ rules
+                  </span>
+                  <span className="font-mono">Isolated</span>
+                </div>
               </div>
 
               {/* Assigned Roles List */}

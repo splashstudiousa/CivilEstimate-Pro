@@ -17,9 +17,17 @@ import {
 } from '../../engine/formatters';
 import { exportReportToExcel, exportReportToPDF } from '../../engine/exporters';
 import { WORK_CATEGORIES } from '../../types/estimate';
+import { hasModulePermission } from '../../data/roles';
 
 export const AbstractOfCost: React.FC = () => {
-  const { project, summary, resources, unitSystem } = useActiveProject();
+  const { project, summary, resources, unitSystem, userRole, activeRoleDef, roleDefinitions } =
+    useActiveProject();
+  const canEditBoq = hasModulePermission(userRole, 'abstract-cost', 'edit', roleDefinitions);
+  const canDeleteBoq = hasModulePermission(userRole, 'abstract-cost', 'delete', roleDefinitions);
+  const canExportBoq = hasModulePermission(userRole, 'abstract-cost', 'export', roleDefinitions);
+  const canInspectRate =
+    userRole === 'Admin' || activeRoleDef.sidebarModules.includes('rate-analysis');
+  const showActionsCol = canEditBoq || canDeleteBoq;
   const companyProfile = useEstimateStore((s) => s.companyProfile);
   const updateBOQItem = useEstimateStore((s) => s.updateBOQItem);
   const duplicateBOQItem = useEstimateStore((s) => s.duplicateBOQItem);
@@ -88,30 +96,36 @@ export const AbstractOfCost: React.FC = () => {
             <GitCompare className="w-3.5 h-3.5 text-orange-500" />
             <span>Compare Versions ({project.revisions.length})</span>
           </button>
-          <button
-            type="button"
-            onClick={() => setShowSaveRev(true)}
-            className="inline-flex items-center gap-1.5 px-3 py-2 rounded-md border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-xs font-medium text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-800 whitespace-nowrap"
-          >
-            <History className="w-3.5 h-3.5 text-sky-600" />
-            <span>Save Revision</span>
-          </button>
-          <button
-            type="button"
-            onClick={() => exportReportToExcel('abstract-cost', project, summary, resources, unitSystem)}
-            className="inline-flex items-center gap-1.5 px-3 py-2 rounded-md border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-xs font-medium text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-800 whitespace-nowrap"
-          >
-            <Download className="w-3.5 h-3.5" />
-            <span>Excel</span>
-          </button>
-          <button
-            type="button"
-            onClick={() => exportReportToPDF('abstract-cost', project, summary, companyProfile, unitSystem)}
-            className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-md bg-orange-600 hover:bg-orange-700 text-white text-xs font-semibold whitespace-nowrap"
-          >
-            <Download className="w-3.5 h-3.5" />
-            <span>Export BOQ PDF</span>
-          </button>
+          {canEditBoq && (
+            <button
+              type="button"
+              onClick={() => setShowSaveRev(true)}
+              className="inline-flex items-center gap-1.5 px-3 py-2 rounded-md border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-xs font-medium text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-800 whitespace-nowrap"
+            >
+              <History className="w-3.5 h-3.5 text-sky-600" />
+              <span>Save Revision</span>
+            </button>
+          )}
+          {canExportBoq && (
+            <>
+              <button
+                type="button"
+                onClick={() => exportReportToExcel('abstract-cost', project, summary, resources, unitSystem)}
+                className="inline-flex items-center gap-1.5 px-3 py-2 rounded-md border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-xs font-medium text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-800 whitespace-nowrap"
+              >
+                <Download className="w-3.5 h-3.5" />
+                <span>Excel</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => exportReportToPDF('abstract-cost', project, summary, companyProfile, unitSystem)}
+                className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-md bg-orange-600 hover:bg-orange-700 text-white text-xs font-semibold whitespace-nowrap"
+              >
+                <Download className="w-3.5 h-3.5" />
+                <span>Export BOQ PDF</span>
+              </button>
+            </>
+          )}
         </div>
       </div>
 
@@ -242,7 +256,9 @@ export const AbstractOfCost: React.FC = () => {
                 <th className="py-2.5 px-3 text-right font-semibold w-32">Unit Rate</th>
                 <th className="py-2.5 px-3 text-center font-semibold w-24">Rate Basis</th>
                 <th className="py-2.5 px-3 text-right font-semibold w-32">Amount</th>
-                <th className="py-2.5 px-2 text-center font-semibold w-16">Actions</th>
+                {showActionsCol && (
+                  <th className="py-2.5 px-2 text-center font-semibold w-16">Actions</th>
+                )}
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
@@ -255,7 +271,7 @@ export const AbstractOfCost: React.FC = () => {
                     <td className="py-2 px-3 text-right font-mono font-semibold text-slate-900 dark:text-white tabular-nums">
                       {formatCurrency(g.subtotal, project.currency)}
                     </td>
-                    <td />
+                    {showActionsCol && <td />}
                   </tr>
                   {g.items.map((item) => {
                     const conv = convertUnitDisplay(item.quantity, item.unit, unitSystem);
@@ -276,15 +292,19 @@ export const AbstractOfCost: React.FC = () => {
                         </td>
                         <td className="py-2.5 px-3 text-right font-mono tabular-nums">
                           {item.useRateAnalysis ? (
-                            <button
-                              type="button"
-                              onClick={() => setActiveModule('rate-analysis')}
-                              title="Click to inspect Rate Analysis"
-                              className="text-sky-700 dark:text-sky-400 hover:underline font-medium"
-                            >
-                              {formatCurrency(rateConv.rate, project.currency)}
-                            </button>
-                          ) : (
+                            canInspectRate ? (
+                              <button
+                                type="button"
+                                onClick={() => setActiveModule('rate-analysis')}
+                                title="Click to inspect Rate Analysis"
+                                className="text-sky-700 dark:text-sky-400 hover:underline font-medium"
+                              >
+                                {formatCurrency(rateConv.rate, project.currency)}
+                              </button>
+                            ) : (
+                              <span>{formatCurrency(rateConv.rate, project.currency)}</span>
+                            )
+                          ) : canEditBoq ? (
                             <input
                               type="number"
                               step="0.5"
@@ -294,45 +314,59 @@ export const AbstractOfCost: React.FC = () => {
                               }
                               className="w-24 px-1.5 py-0.5 text-right font-mono bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded"
                             />
+                          ) : (
+                            <span>{formatCurrency(rateConv.rate, project.currency)}</span>
                           )}
                         </td>
                         <td className="py-2.5 px-3 text-center">
-                          <button
-                            type="button"
-                            onClick={() =>
-                              updateBOQItem(item.id, {
-                                useRateAnalysis: !item.useRateAnalysis,
-                                manualRate: item.manualRate || Math.round(item.unitRate),
-                              })
-                            }
-                            className="text-[11px] font-medium text-slate-600 dark:text-slate-300 hover:text-orange-600"
-                          >
-                            {item.useRateAnalysis ? 'Rate Analysis' : 'Manual'}
-                          </button>
+                          {canEditBoq ? (
+                            <button
+                              type="button"
+                              onClick={() =>
+                                updateBOQItem(item.id, {
+                                  useRateAnalysis: !item.useRateAnalysis,
+                                  manualRate: item.manualRate || Math.round(item.unitRate),
+                                })
+                              }
+                              className="text-[11px] font-medium text-slate-600 dark:text-slate-300 hover:text-orange-600"
+                            >
+                              {item.useRateAnalysis ? 'Rate Analysis' : 'Manual'}
+                            </button>
+                          ) : (
+                            <span className="text-[11px] text-slate-500 dark:text-slate-400">
+                              {item.useRateAnalysis ? 'Rate Analysis' : 'Manual'}
+                            </span>
+                          )}
                         </td>
                         <td className="py-2.5 px-3 text-right font-mono font-semibold text-slate-900 dark:text-white tabular-nums">
                           {formatCurrency(item.amount, project.currency)}
                         </td>
-                        <td className="py-2.5 px-2 text-center">
-                          <div className="flex items-center justify-center gap-1">
-                            <button
-                              type="button"
-                              onClick={() => duplicateBOQItem(item.id)}
-                              title="Duplicate BOQ Item"
-                              className="p-1 text-slate-400 hover:text-slate-700 dark:hover:text-slate-200"
-                            >
-                              <Copy className="w-3.5 h-3.5" />
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => deleteBOQItem(item.id)}
-                              title="Delete BOQ Item"
-                              className="p-1 text-slate-400 hover:text-red-600"
-                            >
-                              <Trash2 className="w-3.5 h-3.5" />
-                            </button>
-                          </div>
-                        </td>
+                        {showActionsCol && (
+                          <td className="py-2.5 px-2 text-center">
+                            <div className="flex items-center justify-center gap-1">
+                              {canEditBoq && (
+                                <button
+                                  type="button"
+                                  onClick={() => duplicateBOQItem(item.id)}
+                                  title="Duplicate BOQ Item"
+                                  className="p-1 text-slate-400 hover:text-slate-700 dark:hover:text-slate-200"
+                                >
+                                  <Copy className="w-3.5 h-3.5" />
+                                </button>
+                              )}
+                              {canDeleteBoq && (
+                                <button
+                                  type="button"
+                                  onClick={() => deleteBOQItem(item.id)}
+                                  title="Delete BOQ Item"
+                                  className="p-1 text-slate-400 hover:text-red-600"
+                                >
+                                  <Trash2 className="w-3.5 h-3.5" />
+                                </button>
+                              )}
+                            </div>
+                          </td>
+                        )}
                       </tr>
                     );
                   })}

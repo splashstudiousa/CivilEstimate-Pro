@@ -55,9 +55,16 @@ export const CollaborationWorkflowModule: React.FC = () => {
   const withinApprovalLimit =
     activeRoleDef.approvalLimit === -1 || summary.grandTotal <= activeRoleDef.approvalLimit;
 
+  const allowedSet = new Set(activeRoleDef.sidebarModules);
+  const canOpenModule = (mod: typeof stages[number]['targetModule']) =>
+    userRole === 'Admin' || allowedSet.has(mod);
+  const canSeeAllTasks = userRole === 'Admin' || userRole === 'Project Manager';
+
   const visibleTasks =
-    taskFilter === 'all' || userRole === 'Admin' || userRole === 'Project Manager'
+    canSeeAllTasks && taskFilter === 'all'
       ? tasks
+      : canSeeAllTasks && taskFilter === 'mine'
+      ? tasks.filter((t) => t.assigneeRole === userRole)
       : tasks.filter((t) => t.assigneeRole === userRole);
 
   const handlePostComment = (e: React.FormEvent) => {
@@ -86,42 +93,39 @@ export const CollaborationWorkflowModule: React.FC = () => {
           </h1>
         </div>
 
-        {/* Approval Status Control */}
-        <div className="flex flex-wrap items-center gap-2">
-          {(['Draft', 'Submitted', 'Under Review', 'Approved', 'Rejected'] as ApprovalStatus[]).map(
-            (st) => {
-              const isApprovalAction = st === 'Approved' || st === 'Rejected';
-              const disabled =
-                userRole === 'Client/Viewer' ||
-                (isApprovalAction && (!canApproveEstimate || (st === 'Approved' && !withinApprovalLimit)));
-              const active = project.approvalStatus === st;
-              return (
-                <button
-                  key={st}
-                  type="button"
-                  disabled={disabled}
-                  onClick={() => updateProjectApprovalStatus(st)}
-                  title={
-                    isApprovalAction && !withinApprovalLimit
-                      ? `Estimate (${formatCurrency(summary.grandTotal, project.currency)}) exceeds ${userRole} approval limit (${formatCurrency(activeRoleDef.approvalLimit, project.currency)})`
-                      : `Set estimate status to ${st}`
-                  }
-                  className={`px-3 py-1.5 rounded-md text-xs font-semibold border transition-colors whitespace-nowrap disabled:opacity-40 disabled:cursor-not-allowed ${
-                    active
-                      ? st === 'Approved'
-                        ? 'bg-emerald-600 border-emerald-600 text-white'
-                        : st === 'Rejected'
-                        ? 'bg-red-600 border-red-600 text-white'
-                        : 'bg-orange-600 border-orange-600 text-white'
-                      : 'bg-white dark:bg-slate-900 border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-800'
-                  }`}
-                >
-                  {st}
-                </button>
-              );
-            }
-          )}
-        </div>
+        {/* Approval Status Control (Only show actions permitted for active role) */}
+        {userRole !== 'Client/Viewer' && (
+          <div className="flex flex-wrap items-center gap-2">
+            {(['Draft', 'Submitted', 'Under Review', 'Approved', 'Rejected'] as ApprovalStatus[])
+              .filter((st) => {
+                const isApprovalAction = st === 'Approved' || st === 'Rejected';
+                if (!isApprovalAction) return true;
+                return canApproveEstimate && (st === 'Rejected' || withinApprovalLimit);
+              })
+              .map((st) => {
+                const active = project.approvalStatus === st;
+                return (
+                  <button
+                    key={st}
+                    type="button"
+                    onClick={() => updateProjectApprovalStatus(st)}
+                    title={`Set estimate status to ${st}`}
+                    className={`px-3 py-1.5 rounded-md text-xs font-semibold border transition-colors whitespace-nowrap ${
+                      active
+                        ? st === 'Approved'
+                          ? 'bg-emerald-600 border-emerald-600 text-white'
+                          : st === 'Rejected'
+                          ? 'bg-red-600 border-red-600 text-white'
+                          : 'bg-orange-600 border-orange-600 text-white'
+                        : 'bg-white dark:bg-slate-900 border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-800'
+                    }`}
+                  >
+                    {st}
+                  </button>
+                );
+              })}
+          </div>
+        )}
       </div>
 
       {!withinApprovalLimit && activeRoleDef.approvalLimit > 0 && canApproveEstimate && (
@@ -222,14 +226,16 @@ export const CollaborationWorkflowModule: React.FC = () => {
                       </div>
                     </>
                   )}
-                  <button
-                    type="button"
-                    onClick={() => setActiveModule(st.targetModule)}
-                    className="w-full inline-flex items-center justify-between text-[11px] text-orange-600 dark:text-orange-400 hover:underline pt-0.5"
-                  >
-                    <span>Open Module</span>
-                    <ArrowRight className="w-3 h-3" />
-                  </button>
+                  {canOpenModule(st.targetModule) && (
+                    <button
+                      type="button"
+                      onClick={() => setActiveModule(st.targetModule)}
+                      className="w-full inline-flex items-center justify-between text-[11px] text-orange-600 dark:text-orange-400 hover:underline pt-0.5"
+                    >
+                      <span>Open Module</span>
+                      <ArrowRight className="w-3 h-3" />
+                    </button>
+                  )}
                 </div>
               </div>
             );
@@ -247,30 +253,32 @@ export const CollaborationWorkflowModule: React.FC = () => {
                 <ClipboardList className="w-4 h-4 text-orange-600" />
                 <span>Department Task Assignments ({visibleTasks.length})</span>
               </h2>
-              <div className="flex items-center gap-1 p-0.5 bg-slate-100 dark:bg-slate-800 rounded">
-                <button
-                  type="button"
-                  onClick={() => setTaskFilter('mine')}
-                  className={`px-2.5 py-1 text-[11px] font-medium rounded ${
-                    taskFilter === 'mine'
-                      ? 'bg-white dark:bg-slate-900 text-slate-900 dark:text-white'
-                      : 'text-slate-500'
-                  }`}
-                >
-                  My Role
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setTaskFilter('all')}
-                  className={`px-2.5 py-1 text-[11px] font-medium rounded ${
-                    taskFilter === 'all'
-                      ? 'bg-white dark:bg-slate-900 text-slate-900 dark:text-white'
-                      : 'text-slate-500'
-                  }`}
-                >
-                  All Project Tasks
-                </button>
-              </div>
+              {canSeeAllTasks && (
+                <div className="flex items-center gap-1 p-0.5 bg-slate-100 dark:bg-slate-800 rounded">
+                  <button
+                    type="button"
+                    onClick={() => setTaskFilter('mine')}
+                    className={`px-2.5 py-1 text-[11px] font-medium rounded ${
+                      taskFilter === 'mine'
+                        ? 'bg-white dark:bg-slate-900 text-slate-900 dark:text-white'
+                        : 'text-slate-500'
+                    }`}
+                  >
+                    My Role
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setTaskFilter('all')}
+                    className={`px-2.5 py-1 text-[11px] font-medium rounded ${
+                      taskFilter === 'all'
+                        ? 'bg-white dark:bg-slate-900 text-slate-900 dark:text-white'
+                        : 'text-slate-500'
+                    }`}
+                  >
+                    All Project Tasks
+                  </button>
+                </div>
+              )}
             </div>
 
             {userRole !== 'Client/Viewer' && (
@@ -382,16 +390,18 @@ export const CollaborationWorkflowModule: React.FC = () => {
                     </div>
                     <p className="text-[11px] text-slate-500 mt-0.5">{n.message}</p>
                   </div>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      markNotificationRead(n.id);
-                      setActiveModule(n.module);
-                    }}
-                    className="text-[11px] font-medium text-orange-600 hover:underline shrink-0"
-                  >
-                    Open
-                  </button>
+                  {canOpenModule(n.module) && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        markNotificationRead(n.id);
+                        setActiveModule(n.module);
+                      }}
+                      className="text-[11px] font-medium text-orange-600 hover:underline shrink-0"
+                    >
+                      Open
+                    </button>
+                  )}
                 </div>
               ))}
             </div>

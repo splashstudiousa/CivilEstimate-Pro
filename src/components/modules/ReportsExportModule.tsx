@@ -9,6 +9,7 @@ import {
   ReportKind,
 } from '../../engine/exporters';
 import { formatCurrency, formatNum } from '../../engine/formatters';
+import { normalizeRoleName } from '../../data/roles';
 
 interface ReportCardDef {
   kind: ReportKind;
@@ -17,11 +18,22 @@ interface ReportCardDef {
   metric: string;
 }
 
-export const ReportsExportModule: React.FC = () => {
-  const { project, summary, resources, unitSystem } = useActiveProject();
-  const companyProfile = useEstimateStore((s) => s.companyProfile);
+const ROLE_REPORT_KINDS: Record<string, ReportKind[]> = {
+  'Estimator/QS': ['full-estimate', 'abstract-cost', 'abstract-quantities', 'rate-analysis', 'material-schedule'],
+  'Project Planner': ['gantt-schedule', 'cash-flow', 'labor-equipment', 'abstract-quantities'],
+  'Finance/Accounts': ['full-estimate', 'abstract-cost', 'cash-flow'],
+  Procurement: ['material-schedule', 'labor-equipment'],
+  'Draftsman/CAD Technician': ['abstract-quantities', 'full-estimate'],
+  'Client/Viewer': ['full-estimate', 'abstract-cost', 'gantt-schedule', 'cash-flow'],
+};
 
-  const reports: ReportCardDef[] = [
+export const ReportsExportModule: React.FC = () => {
+  const { project, summary, resources, unitSystem, userRole } = useActiveProject();
+  const companyProfile = useEstimateStore((s) => s.companyProfile);
+  const normalizedRole = normalizeRoleName(userRole);
+  const allowedKinds = ROLE_REPORT_KINDS[normalizedRole];
+
+  const allReports: ReportCardDef[] = [
     {
       kind: 'full-estimate',
       title: 'Full Estimate Tender Package',
@@ -73,6 +85,10 @@ export const ReportsExportModule: React.FC = () => {
       metric: `${summary.cashFlow.length} Months`,
     },
   ];
+  const reports = allowedKinds
+    ? allReports.filter((r) => allowedKinds.includes(r.kind))
+    : allReports;
+  const showFullPackageCta = !allowedKinds || allowedKinds.includes('full-estimate');
 
   const handleCSVExport = (kind: ReportKind) => {
     if (kind === 'material-schedule') {
@@ -148,16 +164,18 @@ export const ReportsExportModule: React.FC = () => {
             </div>
           </div>
         </div>
-        <button
-          type="button"
-          onClick={() =>
-            exportReportToPDF('full-estimate', project, summary, companyProfile, unitSystem)
-          }
-          className="px-4 py-2.5 rounded-md bg-orange-600 hover:bg-orange-700 text-white text-xs font-semibold inline-flex items-center gap-2 whitespace-nowrap shrink-0"
-        >
-          <FileText className="w-4 h-4" />
-          <span>Download Complete PDF Package</span>
-        </button>
+        {showFullPackageCta && (
+          <button
+            type="button"
+            onClick={() =>
+              exportReportToPDF('full-estimate', project, summary, companyProfile, unitSystem)
+            }
+            className="px-4 py-2.5 rounded-md bg-orange-600 hover:bg-orange-700 text-white text-xs font-semibold inline-flex items-center gap-2 whitespace-nowrap shrink-0"
+          >
+            <FileText className="w-4 h-4" />
+            <span>Download Complete PDF Package</span>
+          </button>
+        )}
       </div>
 
       {/* Report Cards */}

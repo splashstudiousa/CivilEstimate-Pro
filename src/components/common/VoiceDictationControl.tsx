@@ -187,7 +187,16 @@ export const VoiceDictationControl: React.FC<VoiceDictationControlProps> = ({
           fieldContext: TARGET_LABELS[activeTargetRef.current],
         }),
       });
-      const data = (await res.json()) as { text?: string; error?: string };
+      const rawText = await res.text();
+      let data: { text?: string; error?: string } = {};
+      try {
+        data = rawText ? JSON.parse(rawText) : {};
+      } catch {
+        const snippet = rawText.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 140);
+        throw new Error(
+          `Server returned a non-JSON response (HTTP ${res.status})${snippet ? `: ${snippet}` : '.'}`
+        );
+      }
 
       if (!res.ok) {
         throw new Error(data.error || `Transcription failed (HTTP ${res.status}).`);

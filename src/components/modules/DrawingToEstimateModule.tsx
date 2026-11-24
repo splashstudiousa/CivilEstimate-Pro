@@ -179,41 +179,78 @@ function renderDxfPreviewDataUrl(dxfText: string): string {
 async function applyPreprocessTransform(
   imageUrl: string,
   rotationDeg: number,
-  contrastBoost: boolean
+  contrastBoost: boolean,
+  maxDim = 1500,
+  quality = 0.86
 ): Promise<string> {
   return new Promise((resolve) => {
     const img = new Image();
     img.crossOrigin = 'anonymous';
     img.onload = () => {
-      const w = img.naturalWidth || 1200;
-      const h = img.naturalHeight || 800;
-      const swap = rotationDeg === 90 || rotationDeg === 270;
-      const maxDim = 1500;
-      const scale = Math.min(1, maxDim / Math.max(w, h));
-      const cw = Math.round((swap ? h : w) * scale);
-      const ch = Math.round((swap ? w : h) * scale);
-      const canvas = document.createElement('canvas');
-      canvas.width = cw;
-      canvas.height = ch;
-      const ctx = canvas.getContext('2d')!;
-      ctx.fillStyle = '#ffffff';
-      ctx.fillRect(0, 0, cw, ch);
-      if (contrastBoost) {
-        ctx.filter = 'contrast(1.35) grayscale(0.25) brightness(1.04)';
+      const renderAt = (limitDim: number, jpegQuality: number): string => {
+        const w = img.naturalWidth || 1200;
+        const h = img.naturalHeight || 800;
+        const swap = rotationDeg === 90 || rotationDeg === 270;
+        const scale = Math.min(1, limitDim / Math.max(w, h));
+        const cw = Math.max(1, Math.round((swap ? h : w) * scale));
+        const ch = Math.max(1, Math.round((swap ? w : h) * scale));
+        const canvas = document.createElement('canvas');
+        canvas.width = cw;
+        canvas.height = ch;
+        const ctx = canvas.getContext('2d')!;
+        ctx.fillStyle = '#ffffff';
+        ctx.fillRect(0, 0, cw, ch);
+        if (contrastBoost) {
+          ctx.filter = 'contrast(1.35) grayscale(0.25) brightness(1.04)';
+        }
+        ctx.translate(cw / 2, ch / 2);
+        ctx.rotate((rotationDeg * Math.PI) / 180);
+        ctx.drawImage(img, (-w * scale) / 2, (-h * scale) / 2, w * scale, h * scale);
+        return canvas.toDataURL('image/jpeg', jpegQuality);
+      };
+
+      let encoded = renderAt(maxDim, quality);
+      // Keep each sheet well below gateway/proxy limits (~1.8 MB max per sheet)
+      if (encoded.length > 2_400_000) {
+        encoded = renderAt(1200, 0.74);
       }
-      ctx.translate(cw / 2, ch / 2);
-      ctx.rotate((rotationDeg * Math.PI) / 180);
-      ctx.drawImage(img, (-w * scale) / 2, (-h * scale) / 2, w * scale, h * scale);
-      resolve(canvas.toDataURL('image/jpeg', 0.9));
+      resolve(encoded);
     };
     img.onerror = () => resolve(imageUrl);
     img.src = imageUrl;
   });
 }
 
+async function safeFetchJson<T>(url: string, init?: RequestInit): Promise<T> {
+  const res = await fetch(url, init);
+  const rawText = await res.text();
+  let parsed: unknown = null;
+  try {
+    parsed = rawText ? JSON.parse(rawText) : {};
+  } catch {
+    if (res.status === 413) {
+      throw new Error(
+        'Drawing payload exceeded server upload limit (HTTP 413). Try fewer sheets per batch or lower-resolution scans.'
+      );
+    }
+    const snippet = rawText.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 140);
+    throw new Error(
+      `Server returned a non-JSON response (HTTP ${res.status})${snippet ? `: ${snippet}` : '.'}`
+    );
+  }
+  if (!res.ok) {
+    const errMsg =
+      parsed && typeof parsed === 'object' && 'error' in parsed && typeof (parsed as { error: unknown }).error === 'string'
+        ? (parsed as { error: string }).error
+        : `Request failed (HTTP ${res.status}).`;
+    throw new Error(errMsg);
+  }
+  return parsed as T;
+}
+
 export const DrawingToEstimateModule: React.FC = () => {
-  const { project, summary, unitSystem, userRole } = useActiveProject();
-  const projects = useEstimateStore((s) => s.projects);
+  const { project, visibleProjects, summary, unitSystem, userRole, userMemory } =
+    useActiveProject();
   const setActiveProject = useEstimateStore((s) => s.setActiveProject);
   const setActiveModule = useEstimateStore((s) => s.setActiveModule);
   const addBOQItem = useEstimateStore((s) => s.addBOQItem);
@@ -493,10 +530,13 @@ export const DrawingToEstimateModule: React.FC = () => {
     drawViewport();
   }, [drawViewport]);
 
-  // Helper: find BOQ match using Learned Memory -> Template -> Keyword/Category
+  // Helper: find BOQ match using Project + Personal User Learned Memory -> Keyword/Category
   const autoMatchBoqId = useCallback(
     (elementName: string, elementType: string, category: WorkCategory): string | undefined => {
-      const mem = project.pipelineMappingMemory || [];
+      const mem = [
+        ...(project.pipelineMappingMemory || []),
+        ...(userMemory?.pipelineMappingMemory || []),
+      ];
       const lowerName = elementName.toLowerCase().trim();
       const memHit =
         mem.find((m) => m.pattern === lowerName) ||
@@ -516,8 +556,16 @@ export const DrawingToEstimateModule: React.FC = () => {
       if (exactCat) return exactCat.id;
       return project.boqItems.find((b) => b.category === category)?.id;
     },
-    [project.boqItems, project.pipelineMappingMemory]
+    [project.boqItems, project.pipelineMappingMemory, userMemory?.pipelineMappingMemory]
   );
+
+  const availableTemplates = useMemo(() => {
+    const map = new Map<string, NonNullable<typeof project.pipelineTemplates>[number]>();
+    for (const t of [...(project.pipelineTemplates || []), ...(userMemory?.pipelineTemplates || [])]) {
+      if (!map.has(t.name)) map.set(t.name, t);
+    }
+    return Array.from(map.values());
+  }, [project.pipelineTemplates, userMemory?.pipelineTemplates]);
 
   // Upload handlers
   const handleFilesSelected = async (fileList: FileList | null) => {
@@ -703,22 +751,26 @@ export const DrawingToEstimateModule: React.FC = () => {
     setJobLogs([]);
 
     try {
+      setJobMessage('Optimizing & normalizing drawing sheets for AI vision extraction...');
       const preparedSheets = await Promise.all(
         sheets.map(async (sh) => {
           let processedImage = sh.renderedImageUrl || sh.dataUrl;
-          if (processedImage && sh.fileType !== 'dxf' && (sh.rotationDeg !== 0 || sh.contrastBoost || !processedImage.startsWith('data:'))) {
+          if (processedImage && sh.fileType !== 'dxf' && sh.fileType !== 'dwg') {
             processedImage = await applyPreprocessTransform(
               processedImage,
               sh.rotationDeg,
-              sh.contrastBoost
+              sh.contrastBoost,
+              1500,
+              0.85
             );
           }
+          const mimeMatch = processedImage?.match(/^data:([^;]+);base64,/i);
           return {
             id: sh.id,
             name: sh.name,
             fileType: sh.fileType,
             page: sh.activePage,
-            mimeType: 'image/jpeg',
+            mimeType: mimeMatch ? mimeMatch[1] : 'image/jpeg',
             imageBase64: sh.fileType === 'dxf' ? undefined : processedImage,
             dxfText: sh.dxfText,
             pdfExtractedText: sh.pdfExtractedText,
@@ -728,33 +780,95 @@ export const DrawingToEstimateModule: React.FC = () => {
         })
       );
 
-      const postRes = await fetch('/api/pipeline/jobs', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          projectId: project.id,
-          drawingType,
-          revisionLabel,
-          unitSystem,
-          wallHeightM,
-          slabThicknessM,
-          steelRatioKgPerM3,
-          scaleRatioText: activeSheet?.detectedScaleText || '1:100',
-          sheets: preparedSheets,
-        }),
-      });
-      const postJson = await postRes.json();
-      if (!postRes.ok) {
-        throw new Error(postJson.error || 'Failed to queue background extraction job.');
+      const commonMeta = {
+        projectId: project.id,
+        drawingType,
+        revisionLabel,
+        unitSystem,
+        wallHeightM,
+        slabThicknessM,
+        steelRatioKgPerM3,
+        scaleRatioText: activeSheet?.detectedScaleText || '1:100',
+      };
+
+      const estimatedPayloadSize = preparedSheets.reduce(
+        (acc, s) => acc + (s.imageBase64?.length || 0) + (s.dxfText?.length || 0),
+        0
+      );
+      const useChunkedUpload = preparedSheets.length > 1 || estimatedPayloadSize > 1_500_000;
+
+      let postJson: {
+        jobId: string;
+        immutableHashes?: Array<{ sheetId: string; hash: string }>;
+      };
+
+      if (useChunkedUpload) {
+        const initJson = await safeFetchJson<{ jobId: string }>('/api/pipeline/jobs', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            ...commonMeta,
+            deferred: true,
+            sheets: [],
+          }),
+        });
+
+        setJobId(initJson.jobId);
+        const collectedHashes: Array<{ sheetId: string; hash: string }> = [];
+        for (let i = 0; i < preparedSheets.length; i++) {
+          const sh = preparedSheets[i];
+          setJobMessage(`Uploading sheet ${i + 1} of ${preparedSheets.length}: ${sh.name}...`);
+          const sheetRes = await safeFetchJson<{
+            immutableHash: { sheetId: string; hash: string };
+          }>(`/api/pipeline/jobs/${initJson.jobId}/sheets`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ sheet: sh }),
+          });
+          if (sheetRes.immutableHash) {
+            collectedHashes.push(sheetRes.immutableHash);
+            setSheets((prev) =>
+              prev.map((s) =>
+                s.id === sheetRes.immutableHash.sheetId
+                  ? { ...s, immutableHash: sheetRes.immutableHash.hash }
+                  : s
+              )
+            );
+          }
+        }
+
+        setJobMessage('Starting background extraction job...');
+        postJson = await safeFetchJson<{
+          jobId: string;
+          immutableHashes?: Array<{ sheetId: string; hash: string }>;
+        }>(`/api/pipeline/jobs/${initJson.jobId}/start`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+        });
+        if (!postJson.immutableHashes?.length) {
+          postJson.immutableHashes = collectedHashes;
+        }
+      } else {
+        postJson = await safeFetchJson<{
+          jobId: string;
+          immutableHashes?: Array<{ sheetId: string; hash: string }>;
+        }>('/api/pipeline/jobs', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            ...commonMeta,
+            sheets: preparedSheets,
+          }),
+        });
       }
 
-      const newJobId = postJson.jobId as string;
+      const newJobId = postJson.jobId;
       setJobId(newJobId);
 
       // Attach immutable hashes
       if (Array.isArray(postJson.immutableHashes)) {
         const hashMap = new Map<string, string>(
-          postJson.immutableHashes.map((h: { sheetId: string; hash: string }) => [h.sheetId, h.hash])
+          postJson.immutableHashes.map((h) => [h.sheetId, h.hash])
         );
         setSheets((prev) =>
           prev.map((s) => ({ ...s, immutableHash: hashMap.get(s.id) || s.immutableHash }))
@@ -765,11 +879,19 @@ export const DrawingToEstimateModule: React.FC = () => {
       let done = false;
       while (!done) {
         await new Promise((r) => setTimeout(r, 450));
-        const pollRes = await fetch(`/api/pipeline/jobs/${newJobId}`);
-        const jobData = await pollRes.json();
-        if (!pollRes.ok) {
-          throw new Error(jobData.error || 'Lost connection to background job.');
-        }
+        const jobData = await safeFetchJson<{
+          status: string;
+          progressPct?: number;
+          stageMessage?: string;
+          stageLogs?: Array<{ timestamp: string; stage: string; detail: string }>;
+          error?: string;
+          result?: {
+            detectedScaleText?: string;
+            detectedUnits?: 'm' | 'ft';
+            elements?: Array<Record<string, unknown>>;
+            scheduleTables?: PipelineScheduleRow[];
+          };
+        }>(`/api/pipeline/jobs/${newJobId}`);
 
         setJobStatus(jobData.status);
         setJobProgress(jobData.progressPct || 0);
@@ -1262,8 +1384,9 @@ export const DrawingToEstimateModule: React.FC = () => {
             onChange={(e) => setActiveProject(e.target.value)}
             className="px-2.5 py-2 rounded-md border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 font-medium"
           >
-            {projects.map((p) => (
+            {visibleProjects.map((p) => (
               <option key={p.id} value={p.id}>
+                {p.visibility === 'private' ? '[Private] ' : ''}
                 {p.code} · {p.name}
               </option>
             ))}
@@ -1474,15 +1597,15 @@ export const DrawingToEstimateModule: React.FC = () => {
             {/* Templates */}
             <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-lg p-5 space-y-2.5">
               <h3 className="text-sm font-semibold text-slate-900 dark:text-white">
-                Saved Extraction Templates ({(project.pipelineTemplates || []).length})
+                Saved Extraction Templates ({availableTemplates.length})
               </h3>
-              {(project.pipelineTemplates || []).length === 0 ? (
+              {availableTemplates.length === 0 ? (
                 <p className="text-xs text-slate-500">
-                  Save engineering assumptions & BOQ mapping templates in Step 6 for reuse across similar drawings.
+                  Save engineering assumptions &amp; BOQ mapping templates in Step 6 for reuse across your private and shared drawings.
                 </p>
               ) : (
                 <div className="space-y-1.5 text-xs">
-                  {(project.pipelineTemplates || []).map((tpl) => (
+                  {availableTemplates.map((tpl) => (
                     <button
                       key={tpl.id}
                       type="button"

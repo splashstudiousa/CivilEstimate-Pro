@@ -480,10 +480,16 @@ export function exportReportToPDF(
 
   // Page Numbers & Running Header
   const totalPages = doc.getNumberOfPages();
+  const copyrightYear = new Date().getFullYear();
   for (let p = 1; p <= totalPages; p++) {
     doc.setPage(p);
     doc.setFontSize(8);
     doc.setTextColor(148, 163, 184);
+    doc.text(
+      `© ${copyrightYear} Zaim Splash Studio`,
+      14,
+      pageH - 8
+    );
     doc.text(
       `CivilEstimate Pro · ${project.code} · Page ${p} of ${totalPages}`,
       pageW - 14,

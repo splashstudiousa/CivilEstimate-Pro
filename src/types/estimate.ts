@@ -509,6 +509,22 @@ export interface RoleNotification {
   readByRoles: UserRole[];
 }
 
+export type ProjectVisibility = 'team' | 'private';
+
+export interface UserWorkspaceMemory {
+  userId: string;
+  activeProjectId?: string;
+  activeModule?: NavModule;
+  preferredRole?: UserRole;
+  unitSystem?: UnitSystem;
+  theme?: 'light' | 'dark';
+  defaultProjectVisibility?: ProjectVisibility;
+  personalNotes?: string;
+  pipelineMappingMemory: PipelineMappingMemory[];
+  pipelineTemplates: PipelineTemplate[];
+  updatedAt: string;
+}
+
 export interface Project {
   id: string;
   name: string;
@@ -528,6 +544,10 @@ export interface Project {
   contingencyPct: number;
   escalationPct: number;
   approvalStatus: ApprovalStatus;
+  visibility?: ProjectVisibility;
+  ownerUserId?: string;
+  ownerName?: string;
+  sharedWithUserIds?: string[];
   calendar: CalendarSettings;
   boqItems: BOQItem[];
   measurements: MeasurementRow[];
