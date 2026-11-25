@@ -12,11 +12,21 @@ function sendJson(res: ServerResponse, status: number, payload: unknown): void {
 }
 
 async function readBody<T>(req: ServerlessReq): Promise<T> {
-  if (req.body !== undefined && req.body !== null) {
-    if (typeof req.body === 'string') {
-      return (req.body ? JSON.parse(req.body) : {}) as T;
+  try {
+    const existing = req.body;
+    if (existing !== undefined && existing !== null) {
+      if (Buffer.isBuffer(existing)) {
+        const str = existing.toString('utf8').trim();
+        return (str ? JSON.parse(str) : {}) as T;
+      }
+      if (typeof existing === 'string') {
+        const str = existing.trim();
+        return (str ? JSON.parse(str) : {}) as T;
+      }
+      return existing as T;
     }
-    return req.body as T;
+  } catch {
+    // Fall through to stream reading
   }
   const chunks: Buffer[] = [];
   for await (const chunk of req) {
@@ -33,11 +43,22 @@ export default async function handler(req: ServerlessReq, res: ServerResponse): 
   }
 
   try {
-    const apiKey = process.env.GEMINI_API_KEY;
+    const apiKey = [
+      process.env.GEMINI_API_KEY,
+      process.env.GOOGLE_API_KEY,
+      process.env.GOOGLE_GENERATIVE_AI_API_KEY,
+      process.env.VITE_GEMINI_API_KEY,
+      process.env.API_KEY,
+    ]
+      .map((v) => (typeof v === 'string' ? v.trim().replace(/^["']|["']$/g, '') : ''))
+      .find((v) => v && v !== 'MY_GEMINI_API_KEY');
+
     if (!apiKey) {
+      const vercelEnv = process.env.VERCEL_ENV;
       sendJson(res, 503, {
-        error:
-          'GEMINI_API_KEY is not configured in Settings > Secrets. Please configure GEMINI_API_KEY to use Gemini voice transcription.',
+        error: vercelEnv
+          ? `No Gemini API key found in Vercel "${vercelEnv}" environment (checked GEMINI_API_KEY, GOOGLE_API_KEY, VITE_GEMINI_API_KEY). Ensure it is enabled for "${vercelEnv}" and click Redeploy.`
+          : 'GEMINI_API_KEY is not configured in Settings > Secrets. Please configure GEMINI_API_KEY to use Gemini voice transcription.',
       });
       return;
     }

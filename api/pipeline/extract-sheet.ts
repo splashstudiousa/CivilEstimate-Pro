@@ -26,11 +26,21 @@ function sendJson(res: ServerResponse, status: number, payload: unknown): void {
 }
 
 async function readBody<T>(req: ServerlessReq): Promise<T> {
-  if (req.body !== undefined && req.body !== null) {
-    if (typeof req.body === 'string') {
-      return (req.body ? JSON.parse(req.body) : {}) as T;
+  try {
+    const existing = req.body;
+    if (existing !== undefined && existing !== null) {
+      if (Buffer.isBuffer(existing)) {
+        const str = existing.toString('utf8').trim();
+        return (str ? JSON.parse(str) : {}) as T;
+      }
+      if (typeof existing === 'string') {
+        const str = existing.trim();
+        return (str ? JSON.parse(str) : {}) as T;
+      }
+      return existing as T;
     }
-    return req.body as T;
+  } catch {
+    // Fall through to stream reading if req.body getter threw
   }
   const chunks: Buffer[] = [];
   for await (const chunk of req) {
@@ -38,6 +48,25 @@ async function readBody<T>(req: ServerlessReq): Promise<T> {
   }
   const raw = Buffer.concat(chunks).toString('utf8').trim();
   return (raw ? JSON.parse(raw) : {}) as T;
+}
+
+function resolveGeminiApiKey(): string {
+  const candidates = [
+    process.env.GEMINI_API_KEY,
+    process.env.GOOGLE_API_KEY,
+    process.env.GOOGLE_GENERATIVE_AI_API_KEY,
+    process.env.VITE_GEMINI_API_KEY,
+    process.env.API_KEY,
+  ];
+  for (const raw of candidates) {
+    if (typeof raw === 'string') {
+      const cleaned = raw.trim().replace(/^["']|["']$/g, '');
+      if (cleaned && cleaned !== 'MY_GEMINI_API_KEY') {
+        return cleaned;
+      }
+    }
+  }
+  return '';
 }
 
 function classifyDxfLayer(layerName: string, drawingType: string) {
@@ -370,11 +399,13 @@ export default async function handler(req: ServerlessReq, res: ServerResponse): 
       return;
     }
 
-    const apiKey = process.env.GEMINI_API_KEY;
+    const apiKey = resolveGeminiApiKey();
     if (!apiKey) {
+      const vercelEnv = process.env.VERCEL_ENV;
       sendJson(res, 503, {
-        error:
-          'GEMINI_API_KEY is not configured in Vercel Environment Variables (or Settings > Secrets). Add GEMINI_API_KEY and redeploy to enable AI drawing extraction.',
+        error: vercelEnv
+          ? `No Gemini API key found in Vercel "${vercelEnv}" environment (checked GEMINI_API_KEY, GOOGLE_API_KEY, GOOGLE_GENERATIVE_AI_API_KEY, VITE_GEMINI_API_KEY). In Vercel > Project Settings > Environment Variables, ensure GEMINI_API_KEY is enabled for "${vercelEnv}" and trigger a new Redeploy.`
+          : 'GEMINI_API_KEY is not configured in environment secrets. Add GEMINI_API_KEY in Settings > Secrets and restart/redeploy to enable AI drawing extraction.',
       });
       return;
     }

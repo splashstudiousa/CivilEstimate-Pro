@@ -844,6 +844,17 @@ export const DrawingToEstimateModule: React.FC = () => {
       } | null = null;
 
       try {
+        let isServerlessRuntime = false;
+        try {
+          const health = await safeFetchJson<{ runtime?: string }>('/api/health');
+          isServerlessRuntime = health.runtime === 'vercel-serverless';
+        } catch {
+          // Ignore health pre-check failure and try stateful pipeline first
+        }
+        if (isServerlessRuntime) {
+          throw new HttpStatusError(404, 'Use stateless serverless pipeline');
+        }
+
         let postJson: {
           jobId: string;
           immutableHashes?: Array<{ sheetId: string; hash: string }>;

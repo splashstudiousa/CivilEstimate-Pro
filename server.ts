@@ -6,6 +6,7 @@ import {
   analyzeSingleDrawing,
   computeSheetImmutableRecord,
   extractSingleSheet,
+  getGeminiClient,
   HttpApiError,
   transcribeSiteAudio,
   type ImmutableDrawingRecord,
@@ -176,7 +177,7 @@ async function runPipelineBackgroundJob(
 }
 
 app.get('/api/health', (_req, res) => {
-  res.json({ status: 'ok', aiConfigured: Boolean(process.env.GEMINI_API_KEY) });
+  res.json({ status: 'ok', aiConfigured: Boolean(getGeminiClient()) });
 });
 
 app.post('/api/pipeline/extract-sheet', async (req, res) => {
