@@ -1,11 +1,13 @@
-import type { ServerResponse } from 'http';
-import type { ServerlessRequest } from '../src/server/vercelHttp';
-import { sendJson } from '../src/server/vercelHttp';
+import type { IncomingMessage, ServerResponse } from 'http';
 
-export default function handler(_req: ServerlessRequest, res: ServerResponse): void {
-  sendJson(res, 200, {
-    status: 'ok',
-    aiConfigured: Boolean(process.env.GEMINI_API_KEY),
-    runtime: 'vercel-serverless',
-  });
+export default function handler(_req: IncomingMessage, res: ServerResponse): void {
+  res.statusCode = 200;
+  res.setHeader('Content-Type', 'application/json; charset=utf-8');
+  res.end(
+    JSON.stringify({
+      status: 'ok',
+      aiConfigured: Boolean(process.env.GEMINI_API_KEY),
+      runtime: 'vercel-serverless',
+    })
+  );
 }

@@ -124,6 +124,22 @@ function computeElementQuantities(
   };
 }
 
+function parseDistanceInput(raw: string, unit: 'm' | 'ft'): number {
+  const trimmed = raw.trim();
+  if (!trimmed) return 0;
+  if (unit === 'ft') {
+    // Support feet-inches notation like 30'-0", 14'-6", 14' 8", 14'6
+    const ftInMatch = trimmed.match(/^(\d+(?:\.\d+)?)\s*'\s*-?\s*(\d+(?:\.\d+)?)?\s*"?$/);
+    if (ftInMatch) {
+      const ft = parseFloat(ftInMatch[1]) || 0;
+      const inches = parseFloat(ftInMatch[2] || '0') || 0;
+      return ft + inches / 12;
+    }
+  }
+  const num = parseFloat(trimmed);
+  return Number.isFinite(num) ? num : 0;
+}
+
 function renderDxfPreviewDataUrl(dxfText: string): string {
   const detailed = parseDxfDetailed(dxfText);
   const w = 1280;
@@ -285,7 +301,9 @@ export const DrawingToEstimateModule: React.FC = () => {
   const [steelRatioKgPerM3, setSteelRatioKgPerM3] = useState<number>(110);
   const [calibMode, setCalibMode] = useState<boolean>(false);
   const [calibPts, setCalibPts] = useState<Point2D[]>([]);
-  const [calibDistanceM, setCalibDistanceM] = useState<string>('13.6');
+  const [calibDistanceInput, setCalibDistanceInput] = useState<string>(
+    unitSystem === 'imperial' ? '30' : '10'
+  );
 
   // Step 3 Background Job State
   const [jobId, setJobId] = useState<string | null>(null);
@@ -334,6 +352,17 @@ export const DrawingToEstimateModule: React.FC = () => {
   const [loadedBgDim, setLoadedBgDim] = useState<{ w: number; h: number }>({ w: 1200, h: 720 });
 
   const activeSheet = sheets.find((s) => s.id === activeSheetId) || sheets[0];
+  const prevUnitSystemRef = useRef(unitSystem);
+
+  useEffect(() => {
+    if (prevUnitSystemRef.current === unitSystem) return;
+    prevUnitSystemRef.current = unitSystem;
+    const nextUnit: 'm' | 'ft' = unitSystem === 'imperial' ? 'ft' : 'm';
+    setSheets((prev) =>
+      prev.map((sh) => (sh.fileType === 'dxf' ? sh : { ...sh, detectedUnits: nextUnit }))
+    );
+    setCalibDistanceInput(nextUnit === 'ft' ? '30' : '10');
+  }, [unitSystem]);
 
   // Handle "View on drawing" traceability jump from Measurement Sheet / Abstract
   useEffect(() => {
@@ -1443,11 +1472,21 @@ export const DrawingToEstimateModule: React.FC = () => {
         ? {
             [sh.activePage]: {
               page: sh.activePage,
-              pixelsPerUnit: sh.calibratedPixelsPerMeter,
+              pixelsPerUnit:
+                sh.detectedUnits === 'ft'
+                  ? sh.calibratedPixelsPerMeter * 0.3048
+                  : sh.calibratedPixelsPerMeter,
               unit: sh.detectedUnits,
-              referenceDistance: parseFloat(calibDistanceM) || 10,
+              referenceDistance: parseDistanceInput(calibDistanceInput, sh.detectedUnits) || (sh.detectedUnits === 'ft' ? 30 : 10),
               p1: { x: 100, y: 100 },
-              p2: { x: 100 + sh.calibratedPixelsPerMeter * 10, y: 100 },
+              p2: {
+                x:
+                  100 +
+                  (sh.detectedUnits === 'ft'
+                    ? sh.calibratedPixelsPerMeter * 0.3048 * 30
+                    : sh.calibratedPixelsPerMeter * 10),
+                y: 100,
+              },
             },
           }
         : {},
@@ -1808,15 +1847,27 @@ export const DrawingToEstimateModule: React.FC = () => {
                     <label className="block text-[11px] text-slate-500 mb-1">Detected Units</label>
                     <select
                       value={activeSheet.detectedUnits}
-                      onChange={(e) =>
+                      onChange={(e) => {
+                        const nextUnit = e.target.value as 'm' | 'ft';
+                        const prevVal = parseDistanceInput(
+                          calibDistanceInput,
+                          activeSheet.detectedUnits
+                        );
+                        if (prevVal > 0) {
+                          if (activeSheet.detectedUnits === 'm' && nextUnit === 'ft') {
+                            setCalibDistanceInput((prevVal / 0.3048).toFixed(2));
+                          } else if (activeSheet.detectedUnits === 'ft' && nextUnit === 'm') {
+                            setCalibDistanceInput((prevVal * 0.3048).toFixed(3));
+                          }
+                        } else {
+                          setCalibDistanceInput(nextUnit === 'ft' ? '30' : '10');
+                        }
                         setSheets((prev) =>
                           prev.map((x) =>
-                            x.id === activeSheet.id
-                              ? { ...x, detectedUnits: e.target.value as 'm' | 'ft' }
-                              : x
+                            x.id === activeSheet.id ? { ...x, detectedUnits: nextUnit } : x
                           )
-                        )
-                      }
+                        );
+                      }}
                       className="w-full px-2.5 py-1.5 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded"
                     >
                       <option value="m">Metric (Meters / mm)</option>
@@ -1881,26 +1932,42 @@ export const DrawingToEstimateModule: React.FC = () => {
 
                 {calibMode && (
                   <div className="p-3 rounded bg-purple-50 dark:bg-purple-950/30 border border-purple-200 dark:border-purple-800 space-y-2">
-                    <div className="font-medium text-purple-900 dark:text-purple-200">
-                      {calibPts.length < 2
-                        ? `Click two reference points on the sheet preview (${calibPts.length}/2 picked)`
-                        : `Span: ${formatNum(Math.hypot(calibPts[1].x - calibPts[0].x, calibPts[1].y - calibPts[0].y), 1)} px`}
+                    <div className="flex items-center justify-between gap-2">
+                      <div className="font-medium text-purple-900 dark:text-purple-200">
+                        {calibPts.length < 2
+                          ? `Click two reference points on the sheet preview (${calibPts.length}/2 picked)`
+                          : `Span: ${formatNum(Math.hypot(calibPts[1].x - calibPts[0].x, calibPts[1].y - calibPts[0].y), 1)} px`}
+                      </div>
+                      <span className="text-[11px] font-mono text-purple-700 dark:text-purple-300">
+                        Unit: {activeSheet.detectedUnits === 'ft' ? 'FPS (ft / in)' : 'SI (meters)'}
+                      </span>
                     </div>
                     {calibPts.length === 2 && (
-                      <div className="flex items-center gap-2">
+                      <div className="flex flex-wrap items-center gap-2">
                         <input
-                          type="number"
-                          step="0.1"
-                          value={calibDistanceM}
-                          onChange={(e) => setCalibDistanceM(e.target.value)}
-                          className="w-24 px-2 py-1 font-mono bg-white dark:bg-slate-900 border border-purple-300 rounded"
+                          type="text"
+                          inputMode="decimal"
+                          placeholder={activeSheet.detectedUnits === 'ft' ? "e.g. 30 or 30'-0\"" : 'e.g. 9.14'}
+                          value={calibDistanceInput}
+                          onChange={(e) => setCalibDistanceInput(e.target.value)}
+                          className="w-28 px-2 py-1 font-mono bg-white dark:bg-slate-900 border border-purple-300 rounded"
                         />
-                        <span>meters</span>
+                        <span className="font-medium">
+                          {activeSheet.detectedUnits === 'ft' ? 'feet (or ft-in)' : 'meters'}
+                        </span>
                         <button
                           type="button"
                           onClick={() => {
-                            const px = Math.hypot(calibPts[1].x - calibPts[0].x, calibPts[1].y - calibPts[0].y);
-                            const distM = parseFloat(calibDistanceM) || 1;
+                            const px = Math.hypot(
+                              calibPts[1].x - calibPts[0].x,
+                              calibPts[1].y - calibPts[0].y
+                            );
+                            const rawDist = parseDistanceInput(
+                              calibDistanceInput,
+                              activeSheet.detectedUnits
+                            );
+                            const distM =
+                              activeSheet.detectedUnits === 'ft' ? rawDist * 0.3048 : rawDist;
                             if (px > 0 && distM > 0) {
                               setSheets((prev) =>
                                 prev.map((x) =>
@@ -1921,24 +1988,59 @@ export const DrawingToEstimateModule: React.FC = () => {
                   </div>
                 )}
 
+                {activeSheet.calibratedPixelsPerMeter && !calibMode && (
+                  <div className="px-2.5 py-1.5 rounded bg-emerald-50 dark:bg-emerald-950/30 border border-emerald-200 dark:border-emerald-800 text-[11px] text-emerald-700 dark:text-emerald-300 font-mono">
+                    Scale Calibrated:{' '}
+                    {activeSheet.detectedUnits === 'ft'
+                      ? `${formatNum(activeSheet.calibratedPixelsPerMeter * 0.3048, 2)} px/ft (${formatNum(activeSheet.calibratedPixelsPerMeter, 2)} px/m)`
+                      : `${formatNum(activeSheet.calibratedPixelsPerMeter, 2)} px/m`}
+                  </div>
+                )}
+
                 <div className="grid grid-cols-3 gap-2.5 pt-2 border-t border-slate-100 dark:border-slate-800">
                   <div>
-                    <label className="block text-[11px] text-slate-500 mb-1">Wall Height (m)</label>
+                    <label className="block text-[11px] text-slate-500 mb-1">
+                      {activeSheet.detectedUnits === 'ft' ? 'Wall Height (ft)' : 'Wall Height (m)'}
+                    </label>
                     <input
                       type="number"
-                      step="0.05"
-                      value={wallHeightM}
-                      onChange={(e) => setWallHeightM(Number(e.target.value) || 3.0)}
+                      step={activeSheet.detectedUnits === 'ft' ? '0.5' : '0.05'}
+                      value={
+                        activeSheet.detectedUnits === 'ft'
+                          ? Number((wallHeightM / 0.3048).toFixed(2))
+                          : wallHeightM
+                      }
+                      onChange={(e) => {
+                        const v = Number(e.target.value) || 0;
+                        setWallHeightM(
+                          activeSheet.detectedUnits === 'ft'
+                            ? Number((v * 0.3048).toFixed(4)) || 3.05
+                            : v || 3.0
+                        );
+                      }}
                       className="w-full px-2 py-1.5 font-mono bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded"
                     />
                   </div>
                   <div>
-                    <label className="block text-[11px] text-slate-500 mb-1">Slab Thick (m)</label>
+                    <label className="block text-[11px] text-slate-500 mb-1">
+                      {activeSheet.detectedUnits === 'ft' ? 'Slab Thick (in)' : 'Slab Thick (m)'}
+                    </label>
                     <input
                       type="number"
-                      step="0.01"
-                      value={slabThicknessM}
-                      onChange={(e) => setSlabThicknessM(Number(e.target.value) || 0.15)}
+                      step={activeSheet.detectedUnits === 'ft' ? '0.5' : '0.01'}
+                      value={
+                        activeSheet.detectedUnits === 'ft'
+                          ? Number((slabThicknessM / 0.0254).toFixed(2))
+                          : slabThicknessM
+                      }
+                      onChange={(e) => {
+                        const v = Number(e.target.value) || 0;
+                        setSlabThicknessM(
+                          activeSheet.detectedUnits === 'ft'
+                            ? Number((v * 0.0254).toFixed(4)) || 0.15
+                            : v || 0.15
+                        );
+                      }}
                       className="w-full px-2 py-1.5 font-mono bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded"
                     />
                   </div>
